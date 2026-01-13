@@ -20,6 +20,7 @@ export default function ChatView() {
     const [loopCount, setLoopCount] = useState(1)
     const [modelStatus, setModelStatus] = useState<'ok' | 'error' | 'unknown'>('unknown')
     const [currentDevice, setCurrentDevice] = useState<string>('Unknown')
+    const [deviceConnected, setDeviceConnected] = useState<boolean>(false)
     const [logLines, setLogLines] = useState<string[]>([])
     const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -62,6 +63,7 @@ export default function ChatView() {
                 }
                 if (data.model_status) setModelStatus(data.model_status)
                 if (data.device_id) setCurrentDevice(data.device_id)
+                if (data.device_connected !== undefined) setDeviceConnected(data.device_connected)
 
                 setLoading(prev => {
                     // If backend says running, force true
@@ -277,7 +279,7 @@ export default function ChatView() {
     // Timer logic
     const [timer, setTimer] = useState(0)
     useEffect(() => {
-        let interval: NodeJS.Timeout
+        let interval: ReturnType<typeof setInterval> | undefined
         if (loading || stopping) {
             interval = setInterval(() => {
                 setTimer(t => t + 1)
@@ -338,6 +340,13 @@ export default function ChatView() {
                 <div className="absolute left-1/2 transform -translate-x-1/2 flex items-center gap-2 px-3 py-1 rounded-lg bg-slate-800/50 border border-slate-700/50 backdrop-blur-sm">
                     <span className="text-slate-400">📱</span>
                     <span className="text-xs text-slate-200 font-mono">{currentDevice}</span>
+                    <div className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${deviceConnected
+                            ? 'bg-green-500/10 text-green-400 border border-green-500/20'
+                            : 'bg-orange-500/10 text-orange-400 border border-orange-500/20'
+                        }`}>
+                        <div className={`w-1.5 h-1.5 rounded-full ${deviceConnected ? 'bg-green-400' : 'bg-orange-400'}`} />
+                        {deviceConnected ? '已连接' : '未连接'}
+                    </div>
                 </div>
                 <div className="flex items-center gap-4">
                     <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700">

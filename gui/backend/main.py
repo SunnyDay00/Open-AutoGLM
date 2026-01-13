@@ -500,6 +500,21 @@ def get_status():
     else:
         # Fallback to the global tracker (updated by test_model or errors)
         m_status = model_status
+    
+    # Check device connection status
+    device_connected = False
+    try:
+        from phone_agent.device_factory import get_device_factory
+        device_factory = get_device_factory()
+        devices = device_factory.list_devices()
+        
+        if current_settings.device_id:
+            device_connected = current_settings.device_id in devices
+        else:
+            device_connected = len(devices) > 0
+    except Exception as e:
+        print(f"Error checking device connection: {e}")
+        device_connected = False
         
     return {
         "running": agent.is_running if agent else False, 
@@ -507,6 +522,7 @@ def get_status():
         "model_status": m_status,
         "mode": current_settings.mode,
         "device_id": current_settings.device_id or "Auto-Detect",
+        "device_connected": device_connected,
         "max_steps": current_settings.max_steps,
         "verbose": current_settings.verbose
     }
@@ -552,6 +568,85 @@ def get_supported_apps():
         apps = list_supported_apps()
         
     return {"apps": sorted(apps), "device_type": dt}
+
+# ADB Control APIs
+@app.post("/api/adb/reboot")
+def adb_reboot():
+    """Reboot device via ADB in CMD window."""
+    try:
+        device_id = current_settings.device_id or ""
+        device_arg = f"-s {device_id} " if device_id else ""
+        command = f"adb {device_arg}reboot"
+        
+        import subprocess
+        cmd = f'start cmd /k "{command} && echo. && echo Device will reboot. Press any key to close... && pause >nul"'
+        subprocess.Popen(cmd, shell=True)
+        
+        return {"status": "success", "command": command}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.post("/api/adb/install")
+def adb_install():
+    """Install APK via ADB."""
+    try:
+        ps_cmd = """
+        Add-Type -AssemblyName System.Windows.Forms
+        $f = New-Object System.Windows.Forms.OpenFileDialog
+        $f.Filter = "APK Files (*.apk)|*.apk|All Files (*.*)|*.*"
+        $f.Title = "Select APK File"
+        $result = $f.ShowDialog()
+        if ($result -eq 'OK') { Write-Output $f.FileName }
+        """
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps_cmd],
+            capture_output=True, text=True, timeout=60
+        )
+        
+        apk_path = result.stdout.strip()
+        if not apk_path:
+            return {"status": "cancelled"}
+        
+        device_id = current_settings.device_id or ""
+        device_arg = f"-s {device_id} " if device_id else ""
+        command = f'adb {device_arg}install "{apk_path}"'
+        
+        cmd = f'start cmd /k "{command} && echo. && echo Installation completed. Press any key to close... && pause >nul"'
+        subprocess.Popen(cmd, shell=True)
+        
+        return {"status": "success", "command": command, "apk_path": apk_path}
+    except subprocess.TimeoutExpired:
+        return {"status": "error", "message": "Timeout"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.get("/api/adb/screenshot")
+def adb_screenshot_download():
+    """Take screenshot and download."""
+    try:
+        from phone_agent.device_factory import get_device_factory
+        import tempfile, base64
+        from datetime import datetime
+        
+        device_factory = get_device_factory()
+        screenshot = device_factory.get_screenshot(current_settings.device_id)
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"screenshot_{timestamp}.png"
+        temp_path = os.path.join(tempfile.gettempdir(), filename)
+        
+        with open(temp_path, 'wb') as f:
+            f.write(base64.b64decode(screenshot.base64_data))
+        
+        return FileResponse(
+            temp_path,
+            media_type="image/png",
+            filename=filename,
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    except Exception as e:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/screenshot/latest")
 def get_latest_screenshot():

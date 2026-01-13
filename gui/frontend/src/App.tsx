@@ -1,10 +1,11 @@
 import { useState } from 'react'
-import { MessageSquare, Settings, Smartphone, Terminal, Monitor } from 'lucide-react'
+import { MessageSquare, Settings, Smartphone, Terminal, Monitor, Wrench } from 'lucide-react'
 import ChatView from './views/ChatView'
 import SettingsView from './views/SettingsView'
 import DevicesView from './views/DevicesView'
 import LogView from './views/LogView'
 import MonitorView from './views/MonitorView'
+import ADBControlView from './views/ADBControlView'
 
 function App() {
     const [activeTab, setActiveTab] = useState('chat')
@@ -33,6 +34,12 @@ function App() {
                             label="查看"
                             active={activeTab === 'monitor'}
                             onClick={() => setActiveTab('monitor')}
+                        />
+                        <NavItem
+                            icon={<Wrench size={20} />}
+                            label="工具"
+                            active={activeTab === 'adb'}
+                            onClick={() => setActiveTab('adb')}
                         />
                         <NavItem
                             icon={<Settings size={20} />}
@@ -67,6 +74,9 @@ function App() {
                 </div>
                 <div className={`h-full ${activeTab === 'monitor' ? 'block' : 'hidden'}`}>
                     <MonitorView />
+                </div>
+                <div className={`h-full ${activeTab === 'adb' ? 'block' : 'hidden'}`}>
+                    <ADBControlView />
                 </div>
                 <div className={`h-full ${activeTab === 'settings' ? 'block' : 'hidden'}`}>
                     <SettingsView />
