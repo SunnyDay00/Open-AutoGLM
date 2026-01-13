@@ -52,16 +52,38 @@ class ModelClient:
 
     def request(self, messages: list[dict[str, Any]]) -> ModelResponse:
         """
-        Send a request to the model.
+        Send a request to the model with error handling.
+        """
+        try:
+             return self._request_unsafe(messages)
+        except Exception as e:
+            import traceback
+            error_str = str(e)
+            
+            # Catch specific server-side recursion error (ModelScope issue)
+            if "InternalError.Algo" in error_str and "Cannot connect to host 127.0.0.1" in error_str:
+                 print("\n\n❌ [Server Error Detected]")
+                 print("The remote model server is failing to connect to its own internal backend.")
+                 print("This is NOT a local configuration issue. The cloud service provider (ModelScope) is currently broken.")
+                 print("Please try switching to a Local Model or use a different API provider.\n")
+                 
+                 return ModelResponse(
+                     thinking="Server Error",
+                     action="Error: Cloud Provider Internal Failure. Please check logs.",
+                     raw_content=error_str
+                 )
+            
+            # Re-raise other errors or return formatted error response
+            print(f"\n❌ Request failed: {e}")
+            return ModelResponse(
+                thinking="Error",
+                action=f"Error executing request: {e}",
+                raw_content=error_str
+            )
 
-        Args:
-            messages: List of message dictionaries in OpenAI format.
-
-        Returns:
-            ModelResponse containing thinking and action.
-
-        Raises:
-            ValueError: If the response cannot be parsed.
+    def _request_unsafe(self, messages: list[dict[str, Any]]) -> ModelResponse:
+        """
+        Internal request method containing the original logic.
         """
         # Start timing
         start_time = time.time()

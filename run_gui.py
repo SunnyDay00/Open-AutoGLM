@@ -38,7 +38,7 @@ def run_gui():
     time.sleep(3)
     
     # Open Browser
-    webbrowser.open("http://localhost:5173")
+    # webbrowser.open("http://localhost:5173")
     
     try:
         backend_process.wait()

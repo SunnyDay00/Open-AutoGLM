@@ -43,12 +43,21 @@ class ChatRequest(BaseModel):
     message: str
     is_new_task: bool = False
 
-class Settings(BaseModel):
+class ModelSettings(BaseModel):
     base_url: str
     model_name: str
     api_key: str
+
+class Settings(BaseModel):
+    mode: str = "cloud"  # "cloud" or "local"
+    cloud: ModelSettings
+    local: ModelSettings
     device_id: Optional[str] = None
     device_type: str = "adb"
+
+# Global State
+agent: Optional[PhoneAgent] = None
+log_queue = queue.Queue()
 
 # Logging Capture
 class OutputTee(io.StringIO):
@@ -88,10 +97,6 @@ class ConnectionManager:
         await websocket.accept()
         self.active_connections.append(websocket)
         # Replay history
-        # Send as a single large chunk or iterating? 
-        # Sending individually might be slow if history is huge, but safer for simple clients.
-        # Or just join them? The frontend expects individual messages usually, but appending works.
-        # Let's send header indicating history start
         for log in self.log_history:
             try:
                 await websocket.send_text(log)
@@ -148,10 +153,6 @@ def get_devices():
     except Exception as e:
         return {"devices": [], "error": str(e)}
 
-# Global State
-agent: Optional[PhoneAgent] = None
-log_queue = queue.Queue()
-
 # Default Settings and Persistence
 # Use absolute path relative to this script to avoid CWD issues
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -164,19 +165,45 @@ settings_lock = threading.Lock()
 history_lock = threading.Lock()
 
 def load_settings():
+    default_cloud = ModelSettings(
+        base_url="https://open.bigmodel.cn/api/paas/v4",
+        model_name="autoglm-phone",
+        api_key=""
+    )
+    default_local = ModelSettings(
+        base_url="http://localhost:11434/v1",
+        model_name="qwen2.5:9b",
+        api_key="EMPTY"
+    )
+
     if os.path.exists(SETTINGS_FILE):
         try:
             with settings_lock:
                 with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    # Check for critical fields validation could be added here
+                    
+                    # Migration logic: Check if it's old format (flat structure)
+                    if "cloud" not in data and "base_url" in data:
+                        print("Migrating old settings format...")
+                        old_cloud = ModelSettings(
+                            base_url=data.get("base_url", default_cloud.base_url),
+                            model_name=data.get("model_name", default_cloud.model_name),
+                            api_key=data.get("api_key", default_cloud.api_key)
+                        )
+                        return Settings(
+                            mode="cloud",
+                            cloud=old_cloud,
+                            local=default_local,
+                            device_id=data.get("device_id"),
+                            device_type=data.get("device_type", "adb")
+                        )
+                    
                     if "device_id" not in data:
                         data["device_id"] = None
                     print(f"Loaded settings from {SETTINGS_FILE}")
                     return Settings(**data)
         except Exception as e:
             print(f"Failed to load settings from {SETTINGS_FILE}: {e}")
-            # print file content for debugging if needed
             try:
                 with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
                     print(f"Corrupted content raw: {f.read()!r}")
@@ -185,9 +212,9 @@ def load_settings():
         print(f"Settings file not found at {SETTINGS_FILE}, using defaults.")
         
     return Settings(
-        base_url="https://open.bigmodel.cn/api/paas/v4",
-        model_name="autoglm-phone",
-        api_key="",
+        mode="cloud",
+        cloud=default_cloud,
+        local=default_local,
         device_id=None
     )
 
@@ -213,15 +240,18 @@ def update_settings(settings: Settings):
     current_settings = settings
     save_settings_to_file(settings)
     
+    # Determine active config based on mode
+    active_config = settings.cloud if settings.mode == "cloud" else settings.local
+    
     model_config = ModelConfig(
-        base_url=settings.base_url,
-        model_name=settings.model_name,
-        api_key=settings.api_key
+        base_url=active_config.base_url,
+        model_name=active_config.model_name,
+        api_key=active_config.api_key
     )
     
     agent_config = AgentConfig(
         device_id=settings.device_id,
-        # device_type=settings.device_type # AgentConfig might not have this, check code
+        # device_type=settings.device_type
     )
     
     # Re-initialize agent
@@ -239,10 +269,25 @@ def test_model(settings: Settings):
         from phone_agent.model import ModelClient, ModelConfig
         from phone_agent.config import get_system_prompt
         
+        # Use config from the request settings, respecting the mode
+        print(f"DEBUG: Received settings mode: '{settings.mode}'")
+        print(f"DEBUG: Cloud config: {settings.cloud}")
+        print(f"DEBUG: Local config: {settings.local}")
+        
+        # Check and clear proxies if they exist
+        for proxy_key in ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'ALL_PROXY', 'all_proxy']:
+            if proxy_key in os.environ:
+                print(f"DEBUG: Found proxy env var {proxy_key}={os.environ[proxy_key]}")
+                print(f"DEBUG: Clearing {proxy_key} to prevent conflict...")
+                os.environ.pop(proxy_key)
+        
+        active_config = settings.cloud if settings.mode == "cloud" else settings.local
+        print(f"DEBUG: Selected active config base_url: '{active_config.base_url}'")
+        
         model_config = ModelConfig(
-            base_url=settings.base_url,
-            model_name=settings.model_name,
-            api_key=settings.api_key
+            base_url=active_config.base_url,
+            model_name=active_config.model_name,
+            api_key=active_config.api_key
         )
         client = ModelClient(model_config)
         
@@ -260,7 +305,7 @@ def test_model(settings: Settings):
             {"role": "user", "content": user_prompt}
         ]
         
-        print(f"Testing model with URL: {settings.base_url}, Model: {settings.model_name}")
+        print(f"Testing model with URL: {active_config.base_url}, Model: {active_config.model_name}")
         response = client.request(messages)
         
         # Format output as requested
@@ -311,64 +356,10 @@ def clear_history():
     return {"status": "success", "history": initial_history}
 
 def get_beijing_time():
-    """Fetch real-time Beijing time from National Time Service Center (NTSC)."""
-    import socket
-    import struct
-    import time
-    from datetime import datetime, timezone, timedelta
-
-    # NTP Server validation:
-    # ntp.ntsc.ac.cn is the official National Time Service Center of China
-    ntp_server = "ntp.ntsc.ac.cn"
-    
+    """Fetch real-time time from local system."""
+    from datetime import datetime
     try:
-        # Create a socket for UDP communication
-        client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        client.settimeout(2.0)
-        
-        # NTP packet format: 48 bytes
-        # First byte: 0x1B (LI=0, VN=3, Mode=3 -> Client)
-        data = b'\x1b' + 47 * b'\0'
-        
-        # Send request
-        client.sendto(data, (ntp_server, 123))
-        
-        # Receive response
-        data, address = client.recvfrom(1024)
-        
-        if data:
-            # Unpack the Transmit Timestamp (bytes 40-44)
-            # System time is seconds since 1900-01-01 00:00:00 UTC
-            t = struct.unpack('!12I', data)[10]
-            
-            # NTP epoch is 1900, Unix epoch is 1970
-            # Difference is 2208988800 seconds
-            t -= 2208988800
-            
-            # Create datetime object from timestamp (UTC)
-            dt_utc = datetime.fromtimestamp(t, timezone.utc)
-            
-            # Convert to Beijing Time (UTC+8)
-            dt_beijing = dt_utc.astimezone(timezone(timedelta(hours=8)))
-            
-            return dt_beijing.strftime("%H:%M")
-            
-    except Exception as e:
-        print(f"Failed to fetch NTSC time: {e}")
-        
-    # Fallback to system time converted to Beijing time (UTC+8)
-    try:
-        utc_now = datetime.utcnow()
-        beijing_now = utc_now + timedelta(hours=8)
-        return beijing_now.strftime("%H:%M")
-    except:
-        return "Time Error"
-            
-    # Final Fallback to system time converted to Beijing time (UTC+8)
-    try:
-        utc_now = datetime.utcnow()
-        beijing_now = utc_now + timedelta(hours=8)
-        return beijing_now.strftime("%H:%M")
+        return datetime.now().strftime("%H:%M")
     except:
         return "Time Error"
 

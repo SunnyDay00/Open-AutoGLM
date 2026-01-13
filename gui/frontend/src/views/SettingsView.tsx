@@ -3,13 +3,22 @@ import { Save, Cloud, Server, Cpu, Download, Terminal } from 'lucide-react'
 
 export default function SettingsView() {
     const [mode, setMode] = useState<'cloud' | 'local'>('cloud')
-    const [config, setConfig] = useState({
+
+    const [cloudConfig, setCloudConfig] = useState({
         baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
         modelName: 'autoglm-phone',
         apiKey: ''
     })
 
+    const [localConfig, setLocalConfig] = useState({
+        baseUrl: 'http://localhost:11434/v1',
+        modelName: 'qwen2.5:9b',
+        apiKey: 'EMPTY'
+    })
+
     const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'success' | 'error'>('idle')
+    const [testStatus, setTestStatus] = useState<'idle' | 'testing'>('idle')
+    const [testResult, setTestResult] = useState<string>('')
 
     useEffect(() => {
         const fetchSettings = async () => {
@@ -17,14 +26,28 @@ export default function SettingsView() {
                 const res = await fetch('/api/settings')
                 if (res.ok) {
                     const data = await res.json()
-                    setConfig({
-                        baseUrl: data.base_url,
-                        modelName: data.model_name,
-                        apiKey: data.api_key
-                    })
-                    // Guess mode based on URL or let user switch naturally
-                    if (data.base_url.includes('localhost') || data.base_url.includes('127.0.0.1')) {
-                        setMode('local')
+
+                    // Handle migration or new structure
+                    if (data.cloud && data.local) {
+                        setMode(data.mode || 'cloud')
+                        setCloudConfig({
+                            baseUrl: data.cloud.base_url,
+                            modelName: data.cloud.model_name,
+                            apiKey: data.cloud.api_key
+                        })
+                        setLocalConfig({
+                            baseUrl: data.local.base_url,
+                            modelName: data.local.model_name,
+                            apiKey: data.local.api_key
+                        })
+                    } else {
+                        // Fallback/Legacy handling if needed, but backend should migrate
+                        setMode('cloud')
+                        setCloudConfig({
+                            baseUrl: data.base_url || cloudConfig.baseUrl,
+                            modelName: data.model_name || cloudConfig.modelName,
+                            apiKey: data.api_key || cloudConfig.apiKey
+                        })
                     }
                 }
             } catch (e) {
@@ -37,14 +60,26 @@ export default function SettingsView() {
     const handleSave = async () => {
         setSaveStatus('saving')
         try {
+            const payload = {
+                mode: mode,
+                cloud: {
+                    base_url: cloudConfig.baseUrl,
+                    model_name: cloudConfig.modelName,
+                    api_key: cloudConfig.apiKey
+                },
+                local: {
+                    base_url: localConfig.baseUrl,
+                    model_name: localConfig.modelName,
+                    api_key: localConfig.apiKey
+                },
+                device_id: null, // Preserve or handle device_id if needed
+                device_type: 'adb'
+            }
+
             const res = await fetch('/api/settings', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    base_url: config.baseUrl,
-                    model_name: config.modelName,
-                    api_key: config.apiKey
-                })
+                body: JSON.stringify(payload)
             })
 
             if (!res.ok) {
@@ -65,21 +100,29 @@ export default function SettingsView() {
         }
     }
 
-    const [testStatus, setTestStatus] = useState<'idle' | 'testing'>('idle')
-    const [testResult, setTestResult] = useState<string>('')
-
     const handleTest = async () => {
         setTestStatus('testing')
         setTestResult('')
         try {
+            // Send current temporary state for testing, not just saved state
+            const payload = {
+                mode: mode,
+                cloud: {
+                    base_url: cloudConfig.baseUrl,
+                    model_name: cloudConfig.modelName,
+                    api_key: cloudConfig.apiKey
+                },
+                local: {
+                    base_url: localConfig.baseUrl,
+                    model_name: localConfig.modelName,
+                    api_key: localConfig.apiKey
+                }
+            }
+
             const res = await fetch('/api/test_model', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    base_url: config.baseUrl,
-                    model_name: config.modelName,
-                    api_key: config.apiKey
-                })
+                body: JSON.stringify(payload)
             })
             const data = await res.json()
             setTestResult(data.result)
@@ -88,6 +131,13 @@ export default function SettingsView() {
         } finally {
             setTestStatus('idle')
         }
+    }
+
+    // Helper to get current config object for rendering
+    const activeConfig = mode === 'cloud' ? cloudConfig : localConfig
+    const setActiveConfig = (newConfig: typeof cloudConfig) => {
+        if (mode === 'cloud') setCloudConfig(newConfig)
+        else setLocalConfig(newConfig)
     }
 
     return (
@@ -123,15 +173,18 @@ export default function SettingsView() {
                 </div>
 
                 {/* Form */}
-                <div className="bg-slate-800/50 border border-slate-700 rounded-2xl p-8 space-y-6">
+                <div className="bg-slate-800/50 border border-slate-700 rounded-2xl p-8 space-y-6 relative overflow-hidden">
+                    {/* Background decoration */}
+                    <div className={`absolute top-0 left-0 w-1 h-full transition-colors duration-300 ${mode === 'cloud' ? 'bg-blue-500' : 'bg-emerald-500'}`} />
+
                     <div>
                         <label className="block text-sm font-medium text-slate-400 mb-2">基本 URL (Base URL)</label>
                         <input
                             type="text"
-                            value={config.baseUrl}
-                            onChange={e => setConfig({ ...config, baseUrl: e.target.value })}
+                            value={activeConfig.baseUrl}
+                            onChange={e => setActiveConfig({ ...activeConfig, baseUrl: e.target.value })}
                             className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-3 text-slate-100 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-colors"
-                            placeholder="https://api.example.com/v1"
+                            placeholder={mode === 'cloud' ? "https://api.example.com/v1" : "http://localhost:11434/v1"}
                         />
                     </div>
 
@@ -139,10 +192,10 @@ export default function SettingsView() {
                         <label className="block text-sm font-medium text-slate-400 mb-2">模型名称 (Model Name)</label>
                         <input
                             type="text"
-                            value={config.modelName}
-                            onChange={e => setConfig({ ...config, modelName: e.target.value })}
+                            value={activeConfig.modelName}
+                            onChange={e => setActiveConfig({ ...activeConfig, modelName: e.target.value })}
                             className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-3 text-slate-100 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-colors"
-                            placeholder="autoglm-phone-9b"
+                            placeholder={mode === 'cloud' ? "autoglm-phone-9b" : "qwen2.5:9b"}
                         />
                     </div>
 
@@ -150,10 +203,10 @@ export default function SettingsView() {
                         <label className="block text-sm font-medium text-slate-400 mb-2">API 密钥 (API Key)</label>
                         <input
                             type="password"
-                            value={config.apiKey}
-                            onChange={e => setConfig({ ...config, apiKey: e.target.value })}
+                            value={activeConfig.apiKey}
+                            onChange={e => setActiveConfig({ ...activeConfig, apiKey: e.target.value })}
                             className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-3 text-slate-100 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-colors"
-                            placeholder="sk-..."
+                            placeholder={mode === 'cloud' ? "sk-..." : "EMPTY (for local models)"}
                         />
                     </div>
 
@@ -180,6 +233,7 @@ export default function SettingsView() {
                     )}
                 </div>
 
+                {/* Action Buttons */}
                 <div className="mt-8 flex flex-col gap-6">
                     <div className="flex justify-end gap-4">
                         <button
@@ -216,7 +270,7 @@ export default function SettingsView() {
                         <div className="bg-slate-950 rounded-xl border border-slate-800 p-6 animate-in fade-in slide-in-from-top-4 duration-300">
                             <h3 className="text-slate-200 font-semibold mb-3 flex items-center gap-2">
                                 <Terminal size={18} className="text-purple-400" />
-                                测试结果
+                                测试结果 ({mode === 'cloud' ? '云端' : '本地'})
                             </h3>
                             <pre className="font-mono text-sm text-slate-300 whitespace-pre-wrap bg-slate-900/50 p-4 rounded-lg border border-slate-800/50">
                                 {testResult}

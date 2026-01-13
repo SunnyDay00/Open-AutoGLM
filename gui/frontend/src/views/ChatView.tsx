@@ -15,6 +15,7 @@ export default function ChatView() {
     const [messages, setMessages] = useState<Message[]>([])
     const [loading, setLoading] = useState(false)
     const [stopping, setStopping] = useState(false)
+    const [isInteractive, setIsInteractive] = useState(true)
     const scrollRef = useRef<HTMLDivElement>(null)
 
     // Load history from backend on mount
@@ -95,7 +96,7 @@ export default function ChatView() {
         isStreaming.current = true;
 
         try {
-            const isNewTask = messages.length <= 1
+            const isNewTask = !isInteractive || messages.length <= 1
             const response = await fetch('/api/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -254,13 +255,25 @@ export default function ChatView() {
                         {stopping ? '正在停止...' : (loading ? `运行中 (${formatTime(timer)})` : '就绪')}
                     </div>
                 </div>
-                <button
-                    onClick={clearHistory}
-                    className="p-2 text-slate-400 hover:text-red-400 hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
-                    title="清空记录"
-                >
-                    <Trash2 size={18} />
-                </button>
+                <div className="flex items-center gap-4">
+                    <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700">
+                        <span className="text-xs text-slate-400">交互模式</span>
+                        <button
+                            onClick={() => setIsInteractive(!isInteractive)}
+                            className={`relative w-8 h-4 rounded-full transition-colors ${isInteractive ? 'bg-blue-600' : 'bg-slate-600'}`}
+                            title={isInteractive ? "交互模式: 开启 (保留上下文)" : "交互模式: 关闭 (每次都是新任务)"}
+                        >
+                            <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${isInteractive ? 'left-[18px]' : 'left-0.5'}`} />
+                        </button>
+                    </div>
+                    <button
+                        onClick={clearHistory}
+                        className="p-2 text-slate-400 hover:text-red-400 hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
+                        title="清空记录"
+                    >
+                        <Trash2 size={18} />
+                    </button>
+                </div>
             </header>
 
             {/* Messages */}
