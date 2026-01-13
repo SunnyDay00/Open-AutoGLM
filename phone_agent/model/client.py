@@ -50,12 +50,12 @@ class ModelClient:
         self.config = config or ModelConfig()
         self.client = OpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
 
-    def request(self, messages: list[dict[str, Any]]) -> ModelResponse:
+    def request(self, messages: list[dict[str, Any]], verbose: bool = True) -> ModelResponse:
         """
         Send a request to the model with error handling.
         """
         try:
-             return self._request_unsafe(messages)
+             return self._request_unsafe(messages, verbose)
         except Exception as e:
             import traceback
             error_str = str(e)
@@ -81,7 +81,7 @@ class ModelClient:
                 raw_content=error_str
             )
 
-    def _request_unsafe(self, messages: list[dict[str, Any]]) -> ModelResponse:
+    def _request_unsafe(self, messages: list[dict[str, Any]], verbose: bool = True) -> ModelResponse:
         """
         Internal request method containing the original logic.
         """
@@ -131,8 +131,9 @@ class ModelClient:
                     if marker in buffer:
                         # Marker found, print everything before it
                         thinking_part = buffer.split(marker, 1)[0]
-                        print(thinking_part, end="", flush=True)
-                        print()  # Print newline after thinking is complete
+                        if verbose:
+                            print(thinking_part, end="", flush=True)
+                            print()  # Print newline after thinking is complete
                         in_action_phase = True
                         marker_found = True
 

@@ -22,6 +22,7 @@ class AgentConfig:
     lang: str = "cn"
     system_prompt: str | None = None
     verbose: bool = True
+    screenshot_save_path: str | None = None
 
     def __post_init__(self):
         if self.system_prompt is None:
@@ -226,10 +227,12 @@ class PhoneAgent:
         # Get model response
         try:
             msgs = get_messages(self.agent_config.lang)
-            print("\n" + "=" * 50)
-            print(f"💭 {msgs['thinking']}:")
-            print("-" * 50)
-            response = self.model_client.request(self._context)
+            if self.agent_config.verbose:
+                print("\n" + "=" * 50)
+                print(f"💭 {msgs['thinking']}:")
+                print("-" * 50)
+                print("-" * 50)
+            response = self.model_client.request(self._context, verbose=self.agent_config.verbose)
         except Exception as e:
             if self.agent_config.verbose:
                 traceback.print_exc()

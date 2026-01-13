@@ -13,6 +13,15 @@ export default defineConfig({
       '/ws': {
         target: 'ws://localhost:8000',
         ws: true,
+        configure: (proxy, _options) => {
+          proxy.on('error', (err, _req, _res) => {
+            if (err.message.includes('ECONNRESET') || err.message.includes('ECONNABORTED')) {
+              // Ignore harmless socket errors
+              return; 
+            }
+            console.log('proxy error', err);
+          });
+        }
       }
     }
   }

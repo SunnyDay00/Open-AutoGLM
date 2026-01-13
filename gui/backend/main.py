@@ -3,6 +3,7 @@ import os
 import asyncio
 import io
 import contextlib
+import logging
 from typing import List, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,11 +16,29 @@ import queue
 # Add project root to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
+from phone_agent.device_factory import DeviceType
+from phone_agent.config.apps import list_supported_apps
+from phone_agent.config.apps_harmonyos import list_supported_apps as list_harmonyos_apps
+from phone_agent.config.apps_ios import list_supported_apps as list_ios_apps
 from phone_agent.agent import PhoneAgent, AgentConfig, StepResult
 from phone_agent.model import ModelConfig
 # from phone_agent.adb import list_devices # Assuming this exists or similar
 
 app = FastAPI()
+
+# Filter out successful access logs to reduce noise
+class EndpointFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        # Filter out healthy status checks
+        if record.getMessage().find("/api/status") != -1:
+            return False
+        # Filter out any 200 OK responses to keep console clean
+        if record.getMessage().find(" 200 OK") != -1:
+            return False
+        return True
+
+# Apply filter to uvicorn access logger
+logging.getLogger("uvicorn.access").addFilter(EndpointFilter())
 
 app.add_middleware(
     CORSMiddleware,
@@ -55,6 +74,9 @@ class Settings(BaseModel):
     local: ModelSettings
     device_id: Optional[str] = None
     device_type: str = "adb"
+    max_steps: int = 100
+    verbose: bool = True
+    screenshot_save_path: Optional[str] = None
 
 # Global State
 agent: Optional[PhoneAgent] = None
@@ -435,9 +457,7 @@ async def health_checker():
                         # We don't have a lightweight 'ping'. 
                         # We will skip automatic health check to avoid cost/latency and 
                         # instead rely on 'test_model' updates or just initial state.
-                        # Wait, user explicitly asked for "Check status... through test".
-                        # Maybe they mean the UI should show the RESULT of the test they manually run?
-                        # "Add check status... (through test view if available)".
+                        # Wait, user explicitly asked for "Check status... (through test view if available)".
                         # Parsing: "Through test" might mean "Via a test request".
                         # Let's implementation a "Passive" status that defaults to unknown, 
                         # and updates to 'ok'/'error' whenever 'test_model' is called or a chat happens.
@@ -473,12 +493,55 @@ def get_status():
         
     return {
         "running": agent.is_running if agent else False, 
-        # Only returned stopping=True if actually running. Prevents zombie 'Stopping...' state.
         "stopping": (agent.is_stopping and agent.is_running) if agent else False,
         "model_status": m_status,
         "mode": current_settings.mode,
-        "device_id": current_settings.device_id or "Auto-Detect"
+        "device_id": current_settings.device_id or "Auto-Detect",
+        "max_steps": current_settings.max_steps,
+        "verbose": current_settings.verbose
     }
+
+@app.post("/api/tools/select_folder")
+def select_folder():
+    """Open a native folder selection dialog on the server (Windows)."""
+    try:
+        # distinct powershell command to open folder picker
+        ps_cmd = """
+        Add-Type -AssemblyName System.Windows.Forms
+        $f = New-Object System.Windows.Forms.FolderBrowserDialog
+        $f.ShowNewFolderButton = $true
+        $result = $f.ShowDialog()
+        if ($result -eq 'OK') {
+            Write-Output $f.SelectedPath
+        }
+        """
+        # Run powershell command
+        result = subprocess.run(
+            ["powershell", "-Command", ps_cmd], 
+            capture_output=True, 
+            text=True, 
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+        )
+        path = result.stdout.strip()
+        if path:
+            return {"status": "success", "path": path}
+        return {"status": "cancelled", "path": ""}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.get("/api/apps")
+def get_supported_apps():
+    """List supported apps based on current device type."""
+    dt = current_settings.device_type
+    
+    if dt == "hdc":
+        apps = list_harmonyos_apps()
+    elif dt == "ios":
+        apps = list_ios_apps()
+    else:
+        apps = list_supported_apps()
+        
+    return {"apps": sorted(apps), "device_type": dt}
 
 @app.post("/api/chat")
 def chat(request: ChatRequest):
@@ -495,10 +558,14 @@ def chat(request: ChatRequest):
                 model_name=active_config.model_name,
                 api_key=active_config.api_key
             )
-            agent_config = AgentConfig(
-                device_id=current_settings.device_id
+            # Agent Config
+            agent_conf = AgentConfig(
+                max_steps=current_settings.max_steps,
+                device_id=current_settings.device_id,
+                verbose=current_settings.verbose,
+                screenshot_save_path=current_settings.screenshot_save_path
             )
-            agent = PhoneAgent(model_config=model_config, agent_config=agent_config)
+            agent = PhoneAgent(model_config=model_config, agent_config=agent_conf)
         except Exception as e:
             print(f"Lazy agent init failed: {e}")
             return {"error": f"Failed to initialize agent: {str(e)}"}
