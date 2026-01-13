@@ -18,7 +18,17 @@ export default function ChatView() {
     const [isInteractive, setIsInteractive] = useState(true)
     const [isLoopMode, setIsLoopMode] = useState(false)
     const [loopCount, setLoopCount] = useState(1)
+    const [modelStatus, setModelStatus] = useState<'ok' | 'error' | 'unknown'>('unknown')
+    const [currentDevice, setCurrentDevice] = useState<string>('Unknown')
+    const [logLines, setLogLines] = useState<string[]>([])
     const scrollRef = useRef<HTMLDivElement>(null)
+
+    const addLogLine = (msg: string) => {
+        setLogLines(prev => {
+            const next = [...prev, msg]
+            return next.slice(-10)
+        })
+    }
 
     // Load history from backend on mount
     useEffect(() => {
@@ -50,6 +60,8 @@ export default function ChatView() {
                 if (data.stopping !== undefined) {
                     setStopping(data.stopping);
                 }
+                if (data.model_status) setModelStatus(data.model_status)
+                if (data.device_id) setCurrentDevice(data.device_id)
 
                 setLoading(prev => {
                     // If backend says running, force true
@@ -80,11 +92,51 @@ export default function ChatView() {
 
     const handleStop = async () => {
         try {
+            setStopping(true) // Optimistic update
             await fetch('/api/stop', { method: 'POST' })
         } catch (error) {
             console.error('Failed to stop:', error)
+            setStopping(false)
         }
     }
+
+    const handleForceStop = async () => {
+        if (!confirm("强制停止可能会导致后台任务状态未完全清理，确认要强制重置吗？")) return
+        try {
+            await fetch('/api/stop?force=true', { method: 'POST' })
+            // Immediate frontend reset
+            setLoading(false)
+            setStopping(false)
+            isStreaming.current = false
+            setLogLines([])
+            setMessages(prev => [...prev, {
+                role: 'assistant',
+                content: '🚫 已强制停止 (Force Stopped)',
+                thinking: '用户强制重置了状态。'
+            }])
+        } catch (error) {
+            console.error('Failed to force stop:', error)
+        }
+    }
+
+    // Connect to WebSocket for logs (to show real-time prompts)
+    useEffect(() => {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+        const ws = new WebSocket(`${protocol}//${window.location.host}/ws/logs`)
+
+        ws.onmessage = (event) => {
+            const msg = event.data
+            // Filter out HTTP request logs to reduce noise
+            if (msg && !msg.includes("HTTP/1.1") && !msg.includes("WebSocket")) {
+                // Determine if we should show this log
+                // Preference: Show agent prompts or actions
+                // Add to log buffer
+                addLogLine(msg)
+            }
+        }
+
+        return () => ws.close()
+    }, [])
 
     const sendMessage = async () => {
         if (!input.trim() || loading) return
@@ -95,6 +147,7 @@ export default function ChatView() {
         // Add user message temporarily (time is placeholder, will be updated by server history later)
         setMessages(prev => [...prev, { role: 'user', content: userMsg, time: '...' }])
         setLoading(true)
+        setLogLines([]) // Clear logs on new task
         isStreaming.current = true;
 
         try {
@@ -148,6 +201,7 @@ export default function ChatView() {
                             if (lastMsg.role !== 'assistant') return prev
 
                             if (event.type === 'status') {
+                                addLogLine(event.content)
                                 return newMsgs.map((m, i) => i === newMsgs.length - 1 ? { ...m, thinking: event.content } : m)
                             } else if (event.type === 'step') {
                                 let newThinking = event.thinking || lastMsg.thinking
@@ -163,10 +217,9 @@ export default function ChatView() {
                                         newContent += (newContent ? '\n' : '') + event.message
                                     } else {
                                         // Only add to thinking if it's an intermediate result
-                                        // Avoid duplicate newlines if logic runs multiple times? 
-                                        // Actually event.message is the delta/current step message.
-                                        // We append it.
                                         newThinking += `\n执行结果: ${event.message}`
+                                        // Also update loading bubble with intermediate message
+                                        addLogLine(event.message)
                                     }
                                 }
 
@@ -176,6 +229,7 @@ export default function ChatView() {
                                     content: newContent
                                 } : m)
                             } else if (event.type === 'done') {
+                                // Logs persist until next run
                                 return newMsgs.map((m, i) => i === newMsgs.length - 1 ? {
                                     ...m,
                                     content: event.content,
@@ -183,6 +237,7 @@ export default function ChatView() {
                                     duration: event.duration
                                 } : m)
                             } else if (event.type === 'error') {
+                                // Logs persist until next run
                                 return newMsgs.map((m, i) => i === newMsgs.length - 1 ? { ...m, content: event.content } : m)
                             }
                             return newMsgs
@@ -260,6 +315,29 @@ export default function ChatView() {
                             }`} />
                         {stopping ? '正在停止...' : (loading ? `运行中 (${formatTime(timer)})` : '就绪')}
                     </div>
+
+                    {/* Model Availability Check */}
+                    <div className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium border ${modelStatus === 'ok' ? 'bg-green-500/10 text-green-400 border-green-500/20' :
+                        modelStatus === 'error' ? 'bg-red-500/10 text-red-400 border-red-500/20' :
+                            'bg-slate-500/10 text-slate-400 border-slate-500/20'
+                        }`} title={modelStatus === 'ok' ? '模型测试通过' : modelStatus === 'error' ? '模型连接失败' : '未测试 (请手动测试)'}>
+                        <div className={`w-1.5 h-1.5 rounded-full ${modelStatus === 'ok' ? 'bg-green-400' :
+                            modelStatus === 'error' ? 'bg-red-400' :
+                                'bg-slate-400'
+                            }`} />
+                        {modelStatus === 'ok' ? '模型可用' : modelStatus === 'error' ? '不可用' : '未检查'}
+                    </div>
+
+                    {/* Interaction Mode Status */}
+                    <div className="px-2 py-1 rounded-full bg-slate-800 border border-slate-700 text-xs text-blue-300 font-medium">
+                        {isInteractive ? '交互模式' : '单次模式'}
+                    </div>
+                </div>
+
+                {/* Center: Device Info */}
+                <div className="absolute left-1/2 transform -translate-x-1/2 flex items-center gap-2 px-3 py-1 rounded-lg bg-slate-800/50 border border-slate-700/50 backdrop-blur-sm">
+                    <span className="text-slate-400">📱</span>
+                    <span className="text-xs text-slate-200 font-mono">{currentDevice}</span>
                 </div>
                 <div className="flex items-center gap-4">
                     <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700">
@@ -305,7 +383,16 @@ export default function ChatView() {
             </header>
 
             {/* Messages */}
-            < div className="flex-1 overflow-y-auto p-4 space-y-6 scroll-smooth" ref={scrollRef} >
+            < div className="flex-1 overflow-y-auto p-4 space-y-6 scroll-smooth scrollbar-hide" ref={scrollRef} >
+                <style>{`
+                    .scrollbar-hide::-webkit-scrollbar {
+                        display: none;
+                    }
+                    .scrollbar-hide {
+                        -ms-overflow-style: none;
+                        scrollbar-width: none;
+                    }
+                `}</style>
                 {
                     messages.map((msg, idx) => (
                         <div key={idx} className={`flex gap-4 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
@@ -394,10 +481,31 @@ export default function ChatView() {
                             <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center flex-shrink-0 mt-1">
                                 <Bot size={16} className="text-white" />
                             </div>
-                            <div className="bg-slate-800 rounded-2xl rounded-tl-none px-5 py-3 flex items-center gap-2 border border-slate-700">
-                                <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                                <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                                <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                            <div className="bg-slate-800 rounded-2xl rounded-tl-none px-5 py-3 flex items-center gap-2 border border-slate-700 w-full">
+                                {logLines.length > 0 ? (
+                                    <div
+                                        className="flex flex-col gap-0.5 w-full max-h-[400px] overflow-y-auto scrollbar-hide"
+                                        style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+                                    >
+                                        {/* Show spinner next to latest log */}
+                                        <div className="flex items-center gap-2 text-xs text-blue-300 font-medium mb-1 border-b border-slate-700/50 pb-1">
+                                            <div className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce" />
+                                            <span>Running...</span>
+                                        </div>
+                                        {logLines.map((line, idx) => (
+                                            <span key={idx} className={`text-[10px] font-mono whitespace-pre-wrap ${idx === logLines.length - 1 ? 'text-blue-200' : 'text-slate-500'
+                                                }`}>
+                                                {line.length > 150 ? line.substring(0, 150) + '...' : line}
+                                            </span>
+                                        ))}
+                                    </div>
+                                ) : (
+                                    <>
+                                        <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                                        <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                                        <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                                    </>
+                                )}
                             </div>
                         </div>
                     )
@@ -427,15 +535,28 @@ export default function ChatView() {
                         rows={1}
                         style={{ minHeight: '58px' }}
                     />
-                    {loading ? (
-                        <button
-                            onClick={handleStop}
-                            className="absolute right-3 top-3 p-2 bg-red-600 text-white rounded-lg hover:bg-red-500 transition-colors shadow-md animate-pulse flex items-center gap-1"
-                            title="停止 (Stop)"
-                        >
-                            <Square size={16} fill="currentColor" />
-                            <span className="text-xs font-bold">停止</span>
-                        </button>
+                    {loading || stopping ? (
+                        <div className="absolute right-3 top-3 flex gap-2">
+                            <button
+                                onClick={handleStop}
+                                disabled={stopping}
+                                className={`p-2 rounded-lg flex items-center gap-1 transition-colors shadow-md ${stopping ? 'bg-orange-500 text-white cursor-wait' : 'bg-red-600 text-white hover:bg-red-500 animate-pulse'
+                                    }`}
+                                title="停止 (Stop)"
+                            >
+                                <Square size={16} fill="currentColor" />
+                                <span className="text-xs font-bold">{stopping ? 'Stopping' : '停止'}</span>
+                            </button>
+
+                            {/* Force Stop Button - always visible if loading, or maybe only if stopping? User asked for Force Stop button. */}
+                            <button
+                                onClick={handleForceStop}
+                                className="p-2 bg-red-800 text-red-200 rounded-lg hover:bg-red-700 transition-colors shadow-md flex items-center gap-1 border border-red-600"
+                                title="强制停止 (Force Stop)"
+                            >
+                                <Trash2 size={16} />
+                            </button>
+                        </div>
                     ) : (
                         <button
                             onClick={sendMessage}

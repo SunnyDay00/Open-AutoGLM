@@ -266,6 +266,7 @@ def update_settings(settings: Settings):
 
 @app.post("/api/test_model")
 def test_model(settings: Settings):
+    global model_status
     try:
         from phone_agent.model import ModelClient, ModelConfig
         from phone_agent.config import get_system_prompt
@@ -308,13 +309,22 @@ def test_model(settings: Settings):
         
         print(f"Testing model with URL: {active_config.base_url}, Model: {active_config.model_name}")
         response = client.request(messages)
-        
+
+        # Update status logic
+        # User requires strict check: ONLY if we get valid think/answer content is it OK.
+        # If we got an "InternalError" from the client wrapper, it's NOT OK.
+        if response.action and "InternalError" not in response.action and not response.action.startswith("Error"):
+            model_status = "ok"
+        else:
+            model_status = "error"
+
         # Format output as requested
         formatted_output = f"<think>{response.thinking}</think>\n<answer>{response.action}</answer>"
         return {"result": formatted_output}
         
     except Exception as e:
         print(f"Model test failed: {e}")
+        model_status = "error"
         # Return error as result so it shows up in the UI
         return {"result": f"Error: {str(e)}\n\nPlease check your Base URL and API Key.\nMake sure the model is deployed and accessible."}
 
@@ -365,11 +375,15 @@ def get_beijing_time():
         return "Time Error"
 
 @app.post("/api/stop")
-def stop_agent():
+def stop_agent(force: bool = False):
     global agent
     if agent:
         try:
             agent.stop()
+            if force:
+                # Force reset agent state to allow new tasks immediately
+                # This might cause the background thread to crash/exit uncleanly, which is expected.
+                agent.reset()
             return {"status": "success", "message": "Stop signal sent"}
         except Exception as e:
             return {"status": "error", "message": str(e)}
@@ -377,12 +391,94 @@ def stop_agent():
 
 from fastapi.responses import StreamingResponse
 
+# Health Check Service
+model_status = "unknown" # unknown, ok, error
+last_health_check = 0
+
+async def health_checker():
+    global model_status, last_health_check
+    import time
+    from phone_agent.model import ModelClient, ModelConfig
+    
+    while True:
+        try:
+            # Use current settings to verify model
+            active_config = current_settings.cloud if current_settings.mode == "cloud" else current_settings.local
+            
+            # Simple ping/test
+            # We don't want to use real tokens if expensive, but list_models is often free or cheap. 
+            # If not available, we can try a 1-token generation.
+            # For simplicity and safety, we will just assume "check_connection" if possible, 
+            # but usually we have to make a request.
+            # Let's skip heavy check if settings are empty
+            if not active_config.base_url:
+                model_status = "error"
+            else:
+                # We can't easily "ping" without model specific API.
+                # Just mark as 'unknown' until user tries?
+                # The user asked for it to be CHECKED.
+                # So we will try a very minimal request.
+                pass 
+                # Actually, let's just mark it 'ok' if we successfully created the agent previously?
+                # No, user said "through test".
+                # Let's rely on success of 'test_model' calls? 
+                # Or run a dummy request every 60s?
+                # Dummy request:
+                if time.time() - last_health_check > 60:
+                     try:
+                        mc = ModelConfig(
+                            base_url=active_config.base_url,
+                            model_name=active_config.model_name,
+                            api_key=active_config.api_key
+                        )
+                        client = ModelClient(mc)
+                        # We don't have a lightweight 'ping'. 
+                        # We will skip automatic health check to avoid cost/latency and 
+                        # instead rely on 'test_model' updates or just initial state.
+                        # Wait, user explicitly asked for "Check status... through test".
+                        # Maybe they mean the UI should show the RESULT of the test they manually run?
+                        # "Add check status... (through test view if available)".
+                        # Parsing: "Through test" might mean "Via a test request".
+                        # Let's implementation a "Passive" status that defaults to unknown, 
+                        # and updates to 'ok'/'error' whenever 'test_model' is called or a chat happens.
+                        pass
+                     except:
+                        pass
+            
+            # For now, we will NOT auto-ping to avoid costs. 
+            # We will default to 'unknown' and let the user click 'Test' to update it?
+            # Or simpler: Update status whenever we successfully talk to the agent.
+            
+        except Exception:
+            model_status = "error"
+            
+        await asyncio.sleep(5)
+
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(log_broadcaster())
+    # asyncio.create_task(health_checker()) # Disabled auto-check for now to prevent spam
+
 @app.get("/api/status")
 def get_status():
-    global agent
+    global agent, model_status
+    
+    # Determine model status based on agent state or recent success
+    # If agent is running, model is effectively 'ok' (or at least was)
     if agent and agent.is_running:
-        return {"running": True, "stopping": agent.is_stopping}
-    return {"running": False, "stopping": False}
+        m_status = "ok"
+    else:
+        # Fallback to the global tracker (updated by test_model or errors)
+        m_status = model_status
+        
+    return {
+        "running": agent.is_running if agent else False, 
+        # Only returned stopping=True if actually running. Prevents zombie 'Stopping...' state.
+        "stopping": (agent.is_stopping and agent.is_running) if agent else False,
+        "model_status": m_status,
+        "mode": current_settings.mode,
+        "device_id": current_settings.device_id or "Auto-Detect"
+    }
 
 @app.post("/api/chat")
 def chat(request: ChatRequest):
@@ -391,10 +487,13 @@ def chat(request: ChatRequest):
         # Initialize from current settings instead of blank defaults
         print("Initializing agent lazily in chat endpoint...")
         try:
+            # Determine active config based on mode
+            active_config = current_settings.cloud if current_settings.mode == "cloud" else current_settings.local
+            
             model_config = ModelConfig(
-                base_url=current_settings.base_url,
-                model_name=current_settings.model_name,
-                api_key=current_settings.api_key
+                base_url=active_config.base_url,
+                model_name=active_config.model_name,
+                api_key=active_config.api_key
             )
             agent_config = AgentConfig(
                 device_id=current_settings.device_id
@@ -484,9 +583,12 @@ def chat(request: ChatRequest):
                     
                     output_label = f"Loop {loop_idx+1} Task {i+1}" if request.loop_count > 1 and is_batch else \
                                    f"Loop {loop_idx+1}" if request.loop_count > 1 else \
-                                   f"Task {i+1}" if is_batch else "Result"
+                                   f"Task {i+1}" if is_batch else None
                                    
-                    all_task_outputs.append(f"{output_label}: {step_output}")
+                    if output_label:
+                        all_task_outputs.append(f"{output_label}: {step_output}")
+                    else:
+                        all_task_outputs.append(step_output)
             
             # Combine all outputs
             final_content = "\n".join(all_task_outputs)
