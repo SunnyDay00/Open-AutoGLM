@@ -29,11 +29,15 @@ app = FastAPI()
 # Filter out successful access logs to reduce noise
 class EndpointFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
         # Filter out healthy status checks
-        if record.getMessage().find("/api/status") != -1:
+        if "/api/status" in message:
+            return False
+        # Filter out screenshot polling requests
+        if "/api/screenshot/latest" in message:
             return False
         # Filter out any 200 OK responses to keep console clean
-        if record.getMessage().find(" 200 OK") != -1:
+        if " 200 OK" in message:
             return False
         return True
 
@@ -183,6 +187,11 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, "../../"))
 SETTINGS_FILE = os.path.join(PROJECT_ROOT, "settings.json")
 CHAT_HISTORY_FILE = os.path.join(PROJECT_ROOT, "chat_history.json")
+TEMP_SCREENSHOT_DIR = os.path.join(PROJECT_ROOT, "gui", "frontend", "temp_screenshots")
+LATEST_SCREENSHOT_NAME = "latest_screenshot.png"
+
+# Ensure temp screenshot directory exists
+os.makedirs(TEMP_SCREENSHOT_DIR, exist_ok=True)
 
 # File Locks
 settings_lock = threading.Lock()
@@ -544,6 +553,36 @@ def get_supported_apps():
         
     return {"apps": sorted(apps), "device_type": dt}
 
+@app.get("/api/screenshot/latest")
+def get_latest_screenshot():
+    """Get the latest screenshot info for monitoring."""
+    latest_path = os.path.join(TEMP_SCREENSHOT_DIR, LATEST_SCREENSHOT_NAME)
+    
+    if os.path.exists(latest_path):
+        # Get file modification time
+        mtime = os.path.getmtime(latest_path)
+        return {
+            "exists": True,
+            "url": f"/temp_screenshots/{LATEST_SCREENSHOT_NAME}",
+            "timestamp": mtime
+        }
+    else:
+        return {
+            "exists": False,
+            "url": None,
+            "timestamp": None
+        }
+
+@app.get("/temp_screenshots/{filename}")
+def get_screenshot_file(filename: str):
+    """Serve screenshot files from temp directory."""
+    file_path = os.path.join(TEMP_SCREENSHOT_DIR, filename)
+    if os.path.exists(file_path):
+        return FileResponse(file_path, media_type="image/png")
+    from fastapi import HTTPException
+    raise HTTPException(status_code=404, detail="File not found")
+
+
 @app.post("/api/chat")
 def chat(request: ChatRequest):
     global agent
@@ -563,11 +602,10 @@ def chat(request: ChatRequest):
             # Build custom system prompt with conversation prefix if set
             base_system_prompt = None
             if current_settings.conversation_prefix and current_settings.conversation_prefix.strip():
-                # Import the default system prompt function
-                from phone_agent.config.prompts import get_system_prompt
-                base_prompt = get_system_prompt(lang="cn")  # or use a lang setting
+                # Import the default system prompt constant
+                from phone_agent.config.prompts import SYSTEM_PROMPT
                 # Prepend the custom prefix as additional instructions
-                base_system_prompt = f"{current_settings.conversation_prefix.strip()}\n\n{base_prompt}"
+                base_system_prompt = f"{current_settings.conversation_prefix.strip()}\n\n{SYSTEM_PROMPT}"
                 print(f"\n{'='*60}")
                 print(f"✅ 已将对话前置内容注入到系统提示词:")
                 print(f"{current_settings.conversation_prefix.strip()}")

@@ -58,6 +58,8 @@ Thumbs.db
 *.log
 /tmp/
 screenshots/
+temp_screenshots/
+gui/frontend/temp_screenshots/
 
 # Keep old files during transition
 call_model.py

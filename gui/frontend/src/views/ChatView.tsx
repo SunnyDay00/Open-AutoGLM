@@ -15,7 +15,7 @@ export default function ChatView() {
     const [messages, setMessages] = useState<Message[]>([])
     const [loading, setLoading] = useState(false)
     const [stopping, setStopping] = useState(false)
-    const [isInteractive, setIsInteractive] = useState(true)
+    const [isInteractive, setIsInteractive] = useState(false)  // Default to OFF (Single Task Mode)
     const [isLoopMode, setIsLoopMode] = useState(false)
     const [loopCount, setLoopCount] = useState(1)
     const [modelStatus, setModelStatus] = useState<'ok' | 'error' | 'unknown'>('unknown')

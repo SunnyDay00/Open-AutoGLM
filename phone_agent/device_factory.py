@@ -46,8 +46,33 @@ class DeviceFactory:
         return self._module
 
     def get_screenshot(self, device_id: str | None = None, timeout: int = 10):
-        """Get screenshot from device."""
-        return self.module.get_screenshot(device_id, timeout)
+        """Capture a screenshot from the device."""
+        screenshot = self.module.get_screenshot(device_id, timeout)
+        
+        # Copy screenshot to temp folder for monitoring
+        try:
+            import os
+            import shutil
+            PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../"))
+            TEMP_SCREENSHOT_DIR = os.path.join(PROJECT_ROOT, "gui", "frontend", "temp_screenshots")
+            LATEST_SCREENSHOT_NAME = "latest_screenshot.png"
+            
+            os.makedirs(TEMP_SCREENSHOT_DIR, exist_ok=True)
+            temp_screenshot_path = os.path.join(TEMP_SCREENSHOT_DIR, LATEST_SCREENSHOT_NAME)
+            
+            # Remove old screenshot if exists
+            if os.path.exists(temp_screenshot_path):
+                os.remove(temp_screenshot_path)
+            
+            # Save the new screenshot
+            with open(temp_screenshot_path, 'wb') as f:
+                import base64
+                f.write(base64.b64decode(screenshot.base64_data))
+        except Exception as e:
+            # Silently fail if screenshot copy fails - don't break main functionality
+            print(f"Warning: Failed to copy screenshot to temp folder: {e}")
+        
+        return screenshot
 
     def get_current_app(self, device_id: str | None = None) -> str:
         """Get current app name."""
