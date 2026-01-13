@@ -41,6 +41,15 @@ class ActionHandler:
         self.device_id = device_id
         self.confirmation_callback = confirmation_callback or self._default_confirmation
         self.takeover_callback = takeover_callback or self._default_takeover
+        self.notes = []
+
+    def get_notes(self) -> list[str]:
+        """Get all recorded notes."""
+        return self.notes
+
+    def clear_notes(self) -> None:
+        """Clear all recorded notes."""
+        self.notes = []
 
     def execute(
         self, action: dict[str, Any], screen_width: int, screen_height: int
@@ -240,9 +249,11 @@ class ActionHandler:
 
     def _handle_note(self, action: dict, width: int, height: int) -> ActionResult:
         """Handle note action (placeholder for content recording)."""
-        # This action is typically used for recording page content
-        # Implementation depends on specific requirements
-        return ActionResult(True, False)
+        content = action.get("content")
+        if content:
+            self.notes.append(content)
+            return ActionResult(True, False, message=f"Note saved: {content[:50]}...")
+        return ActionResult(False, False, "Missing note content")
 
     def _handle_call_api(self, action: dict, width: int, height: int) -> ActionResult:
         """Handle API call action (placeholder for summarization)."""
@@ -376,10 +387,41 @@ def parse_action(response: str) -> dict[str, Any]:
                 raise ValueError(f"Failed to parse do() action: {e}")
 
         elif response.startswith("finish"):
-            action = {
-                "_metadata": "finish",
-                "message": response.replace("finish(message=", "")[1:-2],
-            }
+            try:
+                # Use AST parsing for finish as well
+                response = response.replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
+                tree = ast.parse(response, mode="eval")
+                if not isinstance(tree.body, ast.Call):
+                    raise ValueError("Expected a function call")
+                
+                call = tree.body
+                action = {"_metadata": "finish"}
+                
+                # Handle finish(message="...") or finish("...")
+                if call.keywords:
+                    for keyword in call.keywords:
+                        if keyword.arg == "message":
+                            action["message"] = ast.literal_eval(keyword.value)
+                elif call.args:
+                     # Positional argument if any
+                     if isinstance(call.args[0], (ast.Str, ast.Constant)):
+                         action["message"] = ast.literal_eval(call.args[0]) if hasattr(ast, 'Constant') else call.args[0].s
+                
+                if "message" not in action:
+                     # Fallback string extraction if parsing args failed but call valid?
+                     # Try brittle extraction as fallback
+                     action["message"] = str(response.replace("finish(message=", "")[1:-2])
+
+            except Exception:
+                # Fallback to brittle legacy parsing
+                try:
+                    action = {
+                        "_metadata": "finish",
+                        "message": response.replace("finish(message=", "")[1:-2],
+                    }
+                except:
+                     raise ValueError(f"Failed to parse finish action: {response}")
+            return action
         else:
             raise ValueError(f"Failed to parse action: {response}")
         return action

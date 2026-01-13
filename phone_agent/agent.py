@@ -80,35 +80,76 @@ class PhoneAgent:
 
         self._context: list[dict[str, Any]] = []
         self._step_count = 0
+        self._stop_flag = False
+        self._is_running = False
+
+    @property
+    def is_running(self) -> bool:
+        return self._is_running
+
+    @property
+    def is_stopping(self) -> bool:
+        return self._stop_flag
+
+    def stop(self) -> None:
+        """Interrupt current execution."""
+        print("Stopping agent execution...")
+        self._stop_flag = True
+        
+    def reset(self) -> None:
+        """Reset agent state and context."""
+        self._stop_flag = False
+        self._is_running = False
+        self._context = []
+        self._step_count = 0
+        if hasattr(self, 'action_handler'):
+            self.action_handler.clear_notes()
+
+    def run_stream(self, task: str):
+        """
+        Run the agent yielding step results.
+        """
+        self._stop_flag = False
+        self._is_running = True
+        self._context = []
+        self._step_count = 0
+
+        try:
+            # First step
+            if self._stop_flag: 
+                yield StepResult(False, True, None, "", "任务已由用户停止")
+                return
+                
+            result = self._execute_step(task, is_first=True)
+            yield result
+            
+            if result.finished:
+                return
+
+            while self._step_count < self.agent_config.max_steps:
+                if self._stop_flag:
+                    yield StepResult(False, True, None, "", "任务已由用户停止")
+                    return
+
+                result = self._execute_step(is_first=False)
+                yield result
+
+                if result.finished:
+                    return
+        finally:
+            self._is_running = False
 
     def run(self, task: str) -> str:
         """
         Run the agent to complete a task.
-
-        Args:
-            task: Natural language description of the task.
-
-        Returns:
-            Final message from the agent.
         """
-        self._context = []
-        self._step_count = 0
-
-        # First step with user prompt
-        result = self._execute_step(task, is_first=True)
-
-        if result.finished:
-            return result.message or "Task completed"
-
-        # Continue until finished or max steps reached
-        while self._step_count < self.agent_config.max_steps:
-            result = self._execute_step(is_first=False)
-
+        final_msg = "Task started"
+        for result in self.run_stream(task):
+            final_msg = result.message or "Running..."
             if result.finished:
-                return result.message or "Task completed"
-
-        return "Max steps reached"
-
+                final_msg = result.message or "Task completed"
+        return final_msg
+    
     def step(self, task: str | None = None) -> StepResult:
         """
         Execute a single step of the agent.
@@ -121,6 +162,9 @@ class PhoneAgent:
         Returns:
             StepResult with step details.
         """
+        if self._stop_flag:
+             return StepResult(False, True, None, "", "任务已由用户停止")
+
         is_first = len(self._context) == 0
 
         if is_first and not task:
@@ -132,11 +176,15 @@ class PhoneAgent:
         """Reset the agent state for a new task."""
         self._context = []
         self._step_count = 0
+        self._stop_flag = False
 
     def _execute_step(
         self, user_prompt: str | None = None, is_first: bool = False
     ) -> StepResult:
         """Execute a single step of the agent loop."""
+        if self._stop_flag:
+             return StepResult(False, True, None, "", "任务已由用户停止")
+
         self._step_count += 1
 
         # Capture current screen state
@@ -160,7 +208,14 @@ class PhoneAgent:
             )
         else:
             screen_info = MessageBuilder.build_screen_info(current_app)
-            text_content = f"** Screen Info **\n\n{screen_info}"
+            
+            # Inject saved notes if any to help model memory
+            notes = self.action_handler.get_notes()
+            notes_info = ""
+            if notes:
+                notes_info = "\n\n** Saved Notes **\n" + "\n".join([f"- {n}" for n in notes])
+            
+            text_content = f"** Screen Info **\n\n{screen_info}{notes_info}"
 
             self._context.append(
                 MessageBuilder.create_user_message(
@@ -204,7 +259,9 @@ class PhoneAgent:
         # Remove image from context to save space
         self._context[-1] = MessageBuilder.remove_images_from_message(self._context[-1])
 
-        # Execute action
+        if self._stop_flag:
+            return StepResult(success=False, finished=True, action=action, thinking=response.thinking, message="任务已由用户停止")
+
         try:
             result = self.action_handler.execute(
                 action, screenshot.width, screenshot.height

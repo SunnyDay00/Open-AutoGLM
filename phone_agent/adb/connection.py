@@ -44,14 +44,43 @@ class ADBConnection:
         >>> conn.disconnect("192.168.1.100:5555")
     """
 
-    def __init__(self, adb_path: str = "adb"):
+def get_adb_path() -> str:
+    """Get the path to the ADB executable."""
+    import os
+    # Check for local adb in platform-tools
+    local_adb = os.path.join(os.getcwd(), "platform-tools", "adb.exe")
+    if os.path.exists(local_adb):
+        return local_adb
+    return "adb"
+
+
+class ADBConnection:
+    """
+    Manages ADB connections to Android devices.
+
+    Supports USB, WiFi, and remote TCP/IP connections.
+
+    Example:
+        >>> conn = ADBConnection()
+        >>> # Connect to remote device
+        >>> conn.connect("192.168.1.100:5555")
+        >>> # List devices
+        >>> devices = conn.list_devices()
+        >>> # Disconnect
+        >>> conn.disconnect("192.168.1.100:5555")
+    """
+
+    def __init__(self, adb_path: str | None = None):
         """
         Initialize ADB connection manager.
 
         Args:
             adb_path: Path to ADB executable.
         """
-        self.adb_path = adb_path
+        if adb_path is None or adb_path == "adb":
+            self.adb_path = get_adb_path()
+        else:
+            self.adb_path = adb_path
 
     def connect(self, address: str, timeout: int = 10) -> tuple[bool, str]:
         """

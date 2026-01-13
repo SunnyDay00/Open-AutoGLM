@@ -21,21 +21,48 @@ def get_current_app(device_id: str | None = None) -> str:
     """
     adb_prefix = _get_adb_prefix(device_id)
 
-    result = subprocess.run(
-        adb_prefix + ["shell", "dumpsys", "window"], capture_output=True, text=True, encoding="utf-8"
-    )
-    output = result.stdout
-    if not output:
-        raise ValueError("No output from dumpsys window")
-
-    # Parse window focus info
-    for line in output.split("\n"):
-        if "mCurrentFocus" in line or "mFocusedApp" in line:
-            for app_name, package in APP_PACKAGES.items():
-                if package in line:
-                    return app_name
-
-    return "System Home"
+    max_retries = 3
+    last_error = None
+    
+    for attempt in range(max_retries):
+        try:
+            result = subprocess.run(
+                adb_prefix + ["shell", "dumpsys", "window"], 
+                capture_output=True, 
+                text=True, 
+                encoding="utf-8"
+            )
+            
+            if result.returncode != 0:
+                # Command failed (e.g., device not found)
+                err_msg = result.stderr.strip() or "Unknown ADB error"
+                raise ConnectionError(f"ADB command failed: {err_msg}")
+                
+            output = result.stdout
+            if not output:
+                # Command ran but returned no output
+                if attempt < max_retries - 1:
+                    time.sleep(0.5)
+                    continue
+                raise ValueError("No output from dumpsys window (stdout is empty)")
+                
+            # Parse window focus info
+            for line in output.split("\n"):
+                if "mCurrentFocus" in line or "mFocusedApp" in line:
+                    for app_name, package in APP_PACKAGES.items():
+                        if package in line:
+                            return app_name
+                            
+            return "System Home"
+            
+        except Exception as e:
+            last_error = e
+            if attempt < max_retries - 1:
+                time.sleep(1)
+                continue
+                
+    # If we get here, all retries failed
+    raise ValueError(f"Failed to get current app after {max_retries} retries: {str(last_error)}")
 
 
 def tap(
@@ -245,8 +272,12 @@ def launch_app(
     return True
 
 
+from phone_agent.adb.connection import get_adb_path
+
+
 def _get_adb_prefix(device_id: str | None) -> list:
     """Get ADB command prefix with optional device specifier."""
+    adb_path = get_adb_path()
     if device_id:
-        return ["adb", "-s", device_id]
-    return ["adb"]
+        return [adb_path, "-s", device_id]
+    return [adb_path]

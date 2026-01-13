@@ -102,8 +102,12 @@ def restore_keyboard(ime: str, device_id: str | None = None) -> None:
     )
 
 
+from phone_agent.adb.connection import get_adb_path
+
+
 def _get_adb_prefix(device_id: str | None) -> list:
     """Get ADB command prefix with optional device specifier."""
+    adb_path = get_adb_path()
     if device_id:
-        return ["adb", "-s", device_id]
-    return ["adb"]
+        return [adb_path, "-s", device_id]
+    return [adb_path]
