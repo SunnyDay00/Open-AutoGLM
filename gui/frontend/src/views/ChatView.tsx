@@ -16,6 +16,8 @@ export default function ChatView() {
     const [loading, setLoading] = useState(false)
     const [stopping, setStopping] = useState(false)
     const [isInteractive, setIsInteractive] = useState(true)
+    const [isLoopMode, setIsLoopMode] = useState(false)
+    const [loopCount, setLoopCount] = useState(1)
     const scrollRef = useRef<HTMLDivElement>(null)
 
     // Load history from backend on mount
@@ -100,7 +102,11 @@ export default function ChatView() {
             const response = await fetch('/api/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ message: userMsg, is_new_task: isNewTask })
+                body: JSON.stringify({
+                    message: userMsg,
+                    is_new_task: isNewTask,
+                    loop_count: isLoopMode ? loopCount : 1
+                })
             })
 
             // We rely on polling to keep loading true if needed, or the stream reader loop 
@@ -265,6 +271,28 @@ export default function ChatView() {
                         >
                             <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${isInteractive ? 'left-[18px]' : 'left-0.5'}`} />
                         </button>
+                    </div>
+
+                    <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700">
+                        <span className="text-xs text-slate-400">循环执行</span>
+                        <button
+                            onClick={() => setIsLoopMode(!isLoopMode)}
+                            className={`relative w-8 h-4 rounded-full transition-colors ${isLoopMode ? 'bg-purple-600' : 'bg-slate-600'}`}
+                            title={isLoopMode ? "循环模式: 开启" : "循环模式: 关闭 (执行一次)"}
+                        >
+                            <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${isLoopMode ? 'left-[18px]' : 'left-0.5'}`} />
+                        </button>
+                        {isLoopMode && (
+                            <input
+                                type="number"
+                                min="1"
+                                max="100"
+                                value={loopCount}
+                                onChange={(e) => setLoopCount(Math.max(1, parseInt(e.target.value) || 1))}
+                                className="w-12 h-5 text-xs bg-slate-900 border border-slate-600 rounded px-1 text-center text-white focus:border-purple-500 outline-none"
+                                title="循环次数"
+                            />
+                        )}
                     </div>
                     <button
                         onClick={clearHistory}

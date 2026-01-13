@@ -42,6 +42,7 @@ async def favicon():
 class ChatRequest(BaseModel):
     message: str
     is_new_task: bool = False
+    loop_count: int = 1
 
 class ModelSettings(BaseModel):
     base_url: str
@@ -422,41 +423,77 @@ def chat(request: ChatRequest):
         final_content = ""
         response_time = ""
         try:
-            # yield initial status
-            yield json.dumps({"type": "status", "content": "Initializing..."}) + "\n"
+            # Check for batch tasks (split by newline)
+            # Filter out empty lines
+            tasks = [line.strip() for line in request.message.split('\n') if line.strip()]
             
-            # Since agent.run_stream is synchronous (calls model blocking), 
-            # we should technically run it in a threadpool to not block the event loop,
-            # but for simple streaming simply yielding from iter is okay if we accept blocking.
-            # To allow asyncio loop to breathe (and handling stops?), we might ideally use run_in_executor
-            # But let's keep it simple: yielded generator. 
-            # NOTE: If run_stream blocks for 10s on network, the loop blocks. 
-            # Correct way for blocking IO generator in FastAPI: iterate in thread.
-            # However, standard iterator in StreamingResponse works (FastAPI runs it in threadpool).
+            if not tasks:
+                tasks = [request.message] # Fallback
+            
+            total_tasks = len(tasks)
+            is_batch = total_tasks > 1
+            
+            if is_batch or request.loop_count > 1:
+                loop_info = f" (Loop {request.loop_count} times)" if request.loop_count > 1 else ""
+                yield json.dumps({"type": "status", "content": f"Batch Mode: {total_tasks} tasks queued{loop_info}..."}) + "\n"
+            else:
+                yield json.dumps({"type": "status", "content": "Initializing..."}) + "\n"
             
             # Track start time
             import time
             start_ts = time.time()
+            all_task_outputs = []
 
-            for step in agent.run_stream(request.message):
-                # Ensure fields are serializable
-                action_desc = step.action
-                if hasattr(action_desc, 'to_dict'): action_desc = action_desc.to_dict()
+            for loop_idx in range(request.loop_count):
+                if agent.is_stopping:
+                    break
                 
-                yield json.dumps({
-                    "type": "step",
-                    "thinking": step.thinking,
-                    "action": action_desc,
-                    "finished": step.finished,
-                    "message": step.message
-                }) + "\n"
+                loop_prefix = f"[Loop {loop_idx+1}/{request.loop_count}] " if request.loop_count > 1 else ""
                 
-                if step.message:
-                    final_content = step.message
+                if request.loop_count > 1:
+                     yield json.dumps({"type": "status", "content": f"Starting Loop {loop_idx+1}/{request.loop_count}..."}) + "\n"
+
+                for i, task in enumerate(tasks):
+                    if agent.is_stopping:
+                        break
+                    
+                    if is_batch or request.loop_count > 1:
+                        task_label = f"Task {i+1}/{total_tasks}" if is_batch else "Task"
+                        yield json.dumps({"type": "status", "content": f"{loop_prefix}Running {task_label}: {task[:20]}..."}) + "\n"
+                    
+                    step_output = ""
+                    for step in agent.run_stream(task):
+                        # Ensure fields are serializable
+                        action_desc = step.action
+                        if hasattr(action_desc, 'to_dict'): action_desc = action_desc.to_dict()
+                        
+                        yield json.dumps({
+                            "type": "step",
+                            "thinking": step.thinking,
+                            "action": action_desc,
+                            "finished": step.finished,
+                            "message": step.message
+                        }) + "\n"
+                        
+                        if step.message:
+                            step_output = step.message
+                    
+                    # Collect output
+                    if not step_output:
+                        step_output = "Done"
+                    
+                    output_label = f"Loop {loop_idx+1} Task {i+1}" if request.loop_count > 1 and is_batch else \
+                                   f"Loop {loop_idx+1}" if request.loop_count > 1 else \
+                                   f"Task {i+1}" if is_batch else "Result"
+                                   
+                    all_task_outputs.append(f"{output_label}: {step_output}")
             
-            # If no final message set from steps (e.g. stopped), use last known
-            if not final_content:
-                 final_content = "Task finished (No output)"
+            # Combine all outputs
+            final_content = "\n".join(all_task_outputs)
+            
+            # If stopped early
+            if agent.is_stopping:
+                 final_content += "\n(Batch stopped by user)"
 
             response_time = get_beijing_time()
             end_ts = time.time()
