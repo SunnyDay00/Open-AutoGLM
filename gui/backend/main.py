@@ -77,6 +77,7 @@ class Settings(BaseModel):
     max_steps: int = 100
     verbose: bool = True
     screenshot_save_path: Optional[str] = None
+    conversation_prefix: Optional[str] = None
 
 # Global State
 agent: Optional[PhoneAgent] = None
@@ -559,11 +560,25 @@ def chat(request: ChatRequest):
                 api_key=active_config.api_key
             )
             # Agent Config
+            # Build custom system prompt with conversation prefix if set
+            base_system_prompt = None
+            if current_settings.conversation_prefix and current_settings.conversation_prefix.strip():
+                # Import the default system prompt function
+                from phone_agent.config.prompts import get_system_prompt
+                base_prompt = get_system_prompt(lang="cn")  # or use a lang setting
+                # Prepend the custom prefix as additional instructions
+                base_system_prompt = f"{current_settings.conversation_prefix.strip()}\n\n{base_prompt}"
+                print(f"\n{'='*60}")
+                print(f"✅ 已将对话前置内容注入到系统提示词:")
+                print(f"{current_settings.conversation_prefix.strip()}")
+                print(f"{'='*60}\n")
+            
             agent_conf = AgentConfig(
                 max_steps=current_settings.max_steps,
                 device_id=current_settings.device_id,
                 verbose=current_settings.verbose,
-                screenshot_save_path=current_settings.screenshot_save_path
+                screenshot_save_path=current_settings.screenshot_save_path,
+                system_prompt=base_system_prompt  # Use custom prompt if prefix is set
             )
             agent = PhoneAgent(model_config=model_config, agent_config=agent_conf)
         except Exception as e:

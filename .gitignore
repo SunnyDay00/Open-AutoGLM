@@ -22,6 +22,7 @@ wheels/
 
 platform-tools
 开发计划书.txt
+chat_history.json
 
 # Virtual environments
 venv/

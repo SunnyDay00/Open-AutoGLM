@@ -18,12 +18,14 @@ export default function SettingsView() {
     const [cloudConfig, setCloudConfig] = useState({
         baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
         modelName: 'autoglm-phone',
-        apiKey: ''
+        apiKey: '',
+        conversationPrefix: ''
     })
     const [localConfig, setLocalConfig] = useState({
         baseUrl: 'http://localhost:11434/v1',
         modelName: 'qwen2.5:9b',
-        apiKey: 'EMPTY'
+        apiKey: 'EMPTY',
+        conversationPrefix: ''
     })
 
     // Agent Config (Auto Save)
@@ -56,12 +58,14 @@ export default function SettingsView() {
                         setCloudConfig({
                             baseUrl: data.cloud.base_url,
                             modelName: data.cloud.model_name,
-                            apiKey: data.cloud.api_key
+                            apiKey: data.cloud.api_key,
+                            conversationPrefix: data.conversation_prefix || ''
                         })
                         setLocalConfig({
                             baseUrl: data.local.base_url,
                             modelName: data.local.model_name,
-                            apiKey: data.local.api_key
+                            apiKey: data.local.api_key,
+                            conversationPrefix: data.conversation_prefix || ''
                         })
                         setAgentConfig({
                             maxSteps: data.max_steps || 100,
@@ -140,7 +144,8 @@ export default function SettingsView() {
             device_id: agentConfig.deviceId || null,
             max_steps: agentConfig.maxSteps,
             verbose: agentConfig.verbose,
-            screenshot_save_path: agentConfig.screenshotSavePath || null
+            screenshot_save_path: agentConfig.screenshotSavePath || null,
+            conversation_prefix: (mode === 'cloud' ? cloudConfig.conversationPrefix : localConfig.conversationPrefix) || null
         }
 
         const res = await fetch('/api/settings', {
@@ -286,6 +291,17 @@ export default function SettingsView() {
                                 value={activeConfig.apiKey}
                                 onChange={e => setActiveConfig({ ...activeConfig, apiKey: e.target.value })}
                                 className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-3 text-slate-100 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-colors"
+                            />
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium text-slate-400 mb-2">对话前置内容 (Conversation Prefix)</label>
+                            <textarea
+                                value={activeConfig.conversationPrefix}
+                                onChange={e => setActiveConfig({ ...activeConfig, conversationPrefix: e.target.value })}
+                                placeholder="（可选）设置每次对话自动添加的前置内容，例如角色设定或指令"
+                                rows={4}
+                                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-3 text-slate-100 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-colors resize-none"
                             />
                         </div>
 
