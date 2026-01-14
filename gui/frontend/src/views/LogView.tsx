@@ -1,7 +1,10 @@
 import { useEffect, useState, useRef } from 'react'
 import { Terminal, Download, Eraser } from 'lucide-react'
 
+import { useDeviceContext } from '../App'
+
 export default function LogView() {
+    const { urlDeviceId } = useDeviceContext()
     const [logs, setLogs] = useState<string[]>([])
     const endRef = useRef<HTMLDivElement>(null)
 
@@ -9,7 +12,9 @@ export default function LogView() {
         // Connect to WebSocket dynamically based on current host
         // This works for both direct access and partial proxying if configured correctly
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-        const wsUrl = `${protocol}//${window.location.host}/ws/logs`
+        // Add device_id to websocket query params if present
+        const search = urlDeviceId ? `?device_id=${encodeURIComponent(urlDeviceId)}` : ''
+        const wsUrl = `${protocol}//${window.location.host}/ws/logs${search}`
 
         console.log("Connecting to WebSocket at:", wsUrl)
         const ws = new WebSocket(wsUrl)
@@ -29,7 +34,7 @@ export default function LogView() {
         return () => {
             ws.close()
         }
-    }, [])
+    }, [urlDeviceId])
 
     useEffect(() => {
         endRef.current?.scrollIntoView({ behavior: 'smooth' })

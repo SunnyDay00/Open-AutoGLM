@@ -1,0 +1,9 @@
+@echo off
+echo Stopping AutoGLM Backend (Python)...
+taskkill /F /IM python.exe /T
+echo Stopping AutoGLM Frontend (Node/Vite)...
+taskkill /F /IM node.exe /T
+echo Stopping ADB Services...
+taskkill /F /IM adb.exe /T
+echo.
+echo All AutoGLM processes should be stopped.

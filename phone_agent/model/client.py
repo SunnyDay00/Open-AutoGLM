@@ -159,7 +159,8 @@ class ModelClient:
 
                 if not is_potential_marker:
                     # Safe to print the buffer
-                    print(buffer, end="", flush=True)
+                    if verbose:
+                        print(buffer, end="", flush=True)
                     buffer = ""
 
         # Calculate total time
@@ -169,23 +170,24 @@ class ModelClient:
         thinking, action = self._parse_response(raw_content)
 
         # Print performance metrics
-        lang = self.config.lang
-        print()
-        print("=" * 50)
-        print(f"⏱️  {get_message('performance_metrics', lang)}:")
-        print("-" * 50)
-        if time_to_first_token is not None:
+        if verbose:
+            lang = self.config.lang
+            print()
+            print("=" * 50)
+            print(f"⏱️  {get_message('performance_metrics', lang)}:")
+            print("-" * 50)
+            if time_to_first_token is not None:
+                print(
+                    f"{get_message('time_to_first_token', lang)}: {time_to_first_token:.3f}s"
+                )
+            if time_to_thinking_end is not None:
+                print(
+                    f"{get_message('time_to_thinking_end', lang)}:        {time_to_thinking_end:.3f}s"
+                )
             print(
-                f"{get_message('time_to_first_token', lang)}: {time_to_first_token:.3f}s"
+                f"{get_message('total_inference_time', lang)}:          {total_time:.3f}s"
             )
-        if time_to_thinking_end is not None:
-            print(
-                f"{get_message('time_to_thinking_end', lang)}:        {time_to_thinking_end:.3f}s"
-            )
-        print(
-            f"{get_message('total_inference_time', lang)}:          {total_time:.3f}s"
-        )
-        print("=" * 50)
+            print("=" * 50)
 
         return ModelResponse(
             thinking=thinking,

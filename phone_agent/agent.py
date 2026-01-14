@@ -188,10 +188,16 @@ class PhoneAgent:
 
         self._step_count += 1
 
+        if self._stop_flag:
+             return StepResult(False, True, None, "", "任务已由用户停止")
+
         # Capture current screen state
         device_factory = get_device_factory()
         screenshot = device_factory.get_screenshot(self.agent_config.device_id)
         current_app = device_factory.get_current_app(self.agent_config.device_id)
+
+        if self._stop_flag:
+             return StepResult(False, True, None, "", "任务已由用户停止")
 
         # Build messages
         if is_first:
@@ -223,6 +229,9 @@ class PhoneAgent:
                     text=text_content, image_base64=screenshot.base64_data
                 )
             )
+
+        if self._stop_flag:
+             return StepResult(False, True, None, "", "任务已由用户停止")
 
         # Get model response
         try:
@@ -258,6 +267,9 @@ class PhoneAgent:
             print(f"🎯 {msgs['action']}:")
             print(json.dumps(action, ensure_ascii=False, indent=2))
             print("=" * 50 + "\n")
+
+        if self._stop_flag:
+             return StepResult(False, True, None, action, "任务已由用户停止")
 
         # Remove image from context to save space
         self._context[-1] = MessageBuilder.remove_images_from_message(self._context[-1])

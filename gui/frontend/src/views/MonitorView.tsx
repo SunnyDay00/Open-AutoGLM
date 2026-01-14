@@ -7,7 +7,10 @@ interface ScreenshotInfo {
     timestamp: number | null
 }
 
+import { useDeviceContext } from '../App'
+
 export default function MonitorView() {
+    const { urlDeviceId } = useDeviceContext()
     const [screenshot, setScreenshot] = useState<ScreenshotInfo | null>(null)
     const [loading, setLoading] = useState(true)
     const [lastUpdate, setLastUpdate] = useState<Date | null>(null)
@@ -15,7 +18,10 @@ export default function MonitorView() {
 
     const fetchScreenshot = async () => {
         try {
-            const res = await fetch('/api/screenshot/latest')
+            const url = urlDeviceId
+                ? `/api/screenshot/latest?device_id=${encodeURIComponent(urlDeviceId)}`
+                : '/api/screenshot/latest'
+            const res = await fetch(url)
             const data = await res.json()
             console.log('[MonitorView] API Response:', data)  // Debug log
             setScreenshot(data)
@@ -37,7 +43,7 @@ export default function MonitorView() {
             const interval = setInterval(fetchScreenshot, 1500)
             return () => clearInterval(interval)
         }
-    }, [autoRefresh])
+    }, [autoRefresh, urlDeviceId])
 
     const handleManualRefresh = () => {
         setLoading(true)

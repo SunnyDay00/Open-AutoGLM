@@ -10,7 +10,10 @@ interface Message {
     image?: string
 }
 
+import { useDeviceContext } from '../App'
+
 export default function ChatView() {
+    const { urlDeviceId } = useDeviceContext()
     const [input, setInput] = useState('')
     const [messages, setMessages] = useState<Message[]>([])
     const [loading, setLoading] = useState(false)
@@ -20,7 +23,11 @@ export default function ChatView() {
     const [loopCount, setLoopCount] = useState(1)
     const [modelStatus, setModelStatus] = useState<'ok' | 'error' | 'unknown'>('unknown')
     const [currentDevice, setCurrentDevice] = useState<string>('Unknown')
+    const [deviceModel, setDeviceModel] = useState<string>('')
+    const [serialNumber, setSerialNumber] = useState<string>('')
     const [deviceConnected, setDeviceConnected] = useState<boolean>(false)
+    const [currentProfile, setCurrentProfile] = useState<string | null>(null)
+    const [testingModel, setTestingModel] = useState(false)
     const [logLines, setLogLines] = useState<string[]>([])
     const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -31,9 +38,43 @@ export default function ChatView() {
         })
     }
 
+    const handleTestModel = async () => {
+        setTestingModel(true)
+        try {
+            const res = await fetch('/api/test_connection', {
+                method: 'POST'
+            })
+            const data = await res.json()
+
+            // Show result to user (like in Settings)
+            if (data.result) {
+                alert(data.result)
+            } else if (data.message) {
+                alert(data.message)
+            }
+
+            if (data.result?.includes('成功') || data.status === 'success') {
+                setModelStatus('ok')
+            } else {
+                setModelStatus('error')
+            }
+        } catch (e) {
+            console.error(e)
+            alert('网络请求失败')
+            setModelStatus('error')
+        } finally {
+            setTestingModel(false)
+        }
+    }
+
     // Load history from backend on mount
+    // Load history from backend on mount (or when device URL changes)
     useEffect(() => {
-        fetch('/api/history')
+        const url = urlDeviceId
+            ? `/api/history?device_id=${encodeURIComponent(urlDeviceId)}`
+            : '/api/history'
+
+        fetch(url)
             .then(res => res.json())
             .then(data => {
                 if (data.history) {
@@ -41,7 +82,7 @@ export default function ChatView() {
                 }
             })
             .catch(err => console.error("Failed to load history:", err))
-    }, [])
+    }, [urlDeviceId])
 
     useEffect(() => {
         if (scrollRef.current) {
@@ -54,7 +95,10 @@ export default function ChatView() {
     useEffect(() => {
         const checkStatus = async () => {
             try {
-                const res = await fetch('/api/status');
+                const url = urlDeviceId
+                    ? `/api/status?device_id=${encodeURIComponent(urlDeviceId)}`
+                    : '/api/status'
+                const res = await fetch(url);
                 const data = await res.json();
 
                 // Update stopping status
@@ -64,6 +108,24 @@ export default function ChatView() {
                 if (data.model_status) setModelStatus(data.model_status)
                 if (data.device_id) setCurrentDevice(data.device_id)
                 if (data.device_connected !== undefined) setDeviceConnected(data.device_connected)
+
+                // Fetch device details if connected
+                if (data.device_id && data.device_id !== 'Auto-Detect') {
+                    try {
+                        const devRes = await fetch(`/api/device/${encodeURIComponent(data.device_id)}/info`)
+                        const devData = await devRes.json()
+                        if (devData.model) setDeviceModel(`${devData.brand} ${devData.model}`)
+                        if (devData.serial_number) setSerialNumber(devData.serial_number)
+                    } catch (e) { /* ignore */ }
+
+                    // Get profile binding from localStorage
+                    const bindings = localStorage.getItem('deviceProfileBindings')
+                    if (bindings) {
+                        const parsed = JSON.parse(bindings)
+                        const binding = parsed.find((b: any) => b.device_id === data.device_id)
+                        setCurrentProfile(binding?.profile_name || null)
+                    }
+                }
 
                 setLoading(prev => {
                     // If backend says running, force true
@@ -143,6 +205,18 @@ export default function ChatView() {
     const sendMessage = async () => {
         if (!input.trim() || loading) return
 
+        // Check device connection
+        if (!deviceConnected) {
+            alert('请先在设备界面连接设备')
+            return
+        }
+
+        // Check profile selected
+        if (!currentProfile) {
+            alert('请先为设备选择配置文件')
+            return
+        }
+
         const userMsg = input
         setInput('')
 
@@ -160,7 +234,8 @@ export default function ChatView() {
                 body: JSON.stringify({
                     message: userMsg,
                     is_new_task: isNewTask,
-                    loop_count: isLoopMode ? loopCount : 1
+                    loop_count: isLoopMode ? loopCount : 1,
+                    device_id: urlDeviceId
                 })
             })
 
@@ -305,6 +380,15 @@ export default function ChatView() {
                         <Bot className="text-blue-500" size={20} />
                         AI 助手
                     </h2>
+
+                    {/* Profile Status */}
+                    <div className={`px-3 py-1 rounded-full text-xs font-medium border ${currentProfile
+                        ? 'bg-purple-500/10 text-purple-400 border-purple-500/20'
+                        : 'bg-red-500/10 text-red-400 border-red-500/20'
+                        }`}>
+                        配置: {currentProfile || '未选择'}
+                    </div>
+
                     <div className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium border ${stopping
                         ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
                         : loading
@@ -318,35 +402,43 @@ export default function ChatView() {
                         {stopping ? '正在停止...' : (loading ? `运行中 (${formatTime(timer)})` : '就绪')}
                     </div>
 
-                    {/* Model Availability Check */}
-                    <div className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium border ${modelStatus === 'ok' ? 'bg-green-500/10 text-green-400 border-green-500/20' :
-                        modelStatus === 'error' ? 'bg-red-500/10 text-red-400 border-red-500/20' :
-                            'bg-slate-500/10 text-slate-400 border-slate-500/20'
-                        }`} title={modelStatus === 'ok' ? '模型测试通过' : modelStatus === 'error' ? '模型连接失败' : '未测试 (请手动测试)'}>
-                        <div className={`w-1.5 h-1.5 rounded-full ${modelStatus === 'ok' ? 'bg-green-400' :
-                            modelStatus === 'error' ? 'bg-red-400' :
-                                'bg-slate-400'
+                    {/* Model Availability Check - Clickable */}
+                    <button
+                        onClick={handleTestModel}
+                        disabled={testingModel}
+                        className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium border cursor-pointer hover:opacity-80 transition-opacity ${modelStatus === 'ok' ? 'bg-green-500/10 text-green-400 border-green-500/20' :
+                            modelStatus === 'error' ? 'bg-red-500/10 text-red-400 border-red-500/20' :
+                                'bg-slate-500/10 text-slate-400 border-slate-500/20'
+                            }`}
+                        title="点击测试模型连接"
+                    >
+                        <div className={`w-1.5 h-1.5 rounded-full ${testingModel ? 'bg-blue-400 animate-pulse' :
+                            modelStatus === 'ok' ? 'bg-green-400' :
+                                modelStatus === 'error' ? 'bg-red-400' :
+                                    'bg-slate-400'
                             }`} />
-                        {modelStatus === 'ok' ? '模型可用' : modelStatus === 'error' ? '不可用' : '未检查'}
-                    </div>
-
-                    {/* Interaction Mode Status */}
-                    <div className="px-2 py-1 rounded-full bg-slate-800 border border-slate-700 text-xs text-blue-300 font-medium">
-                        {isInteractive ? '交互模式' : '单次模式'}
-                    </div>
+                        {testingModel ? '测试中...' : (modelStatus === 'ok' ? '模型可用' : modelStatus === 'error' ? '不可用' : '点击测试')}
+                    </button>
                 </div>
 
                 {/* Center: Device Info */}
-                <div className="absolute left-1/2 transform -translate-x-1/2 flex items-center gap-2 px-3 py-1 rounded-lg bg-slate-800/50 border border-slate-700/50 backdrop-blur-sm">
-                    <span className="text-slate-400">📱</span>
-                    <span className="text-xs text-slate-200 font-mono">{currentDevice}</span>
-                    <div className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${deviceConnected
+                <div className="absolute left-1/2 transform -translate-x-1/2 flex flex-col items-center px-4 py-1.5 rounded-lg bg-slate-800/50 border border-slate-700/50 backdrop-blur-sm">
+                    <div className="flex items-center gap-2">
+                        <span className="text-slate-400">📱</span>
+                        <span className="text-sm text-slate-200 font-medium">{deviceModel || currentDevice}</span>
+                        <div className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${deviceConnected
                             ? 'bg-green-500/10 text-green-400 border border-green-500/20'
                             : 'bg-orange-500/10 text-orange-400 border border-orange-500/20'
-                        }`}>
-                        <div className={`w-1.5 h-1.5 rounded-full ${deviceConnected ? 'bg-green-400' : 'bg-orange-400'}`} />
-                        {deviceConnected ? '已连接' : '未连接'}
+                            }`}>
+                            <div className={`w-1.5 h-1.5 rounded-full ${deviceConnected ? 'bg-green-400' : 'bg-orange-400'}`} />
+                            {deviceConnected ? '已连接' : '未连接'}
+                        </div>
                     </div>
+                    {deviceConnected && serialNumber && (
+                        <div className="text-xs text-slate-500 font-mono mt-0.5">
+                            {currentDevice} · SN: {serialNumber.substring(0, 8)}...
+                        </div>
+                    )}
                 </div>
                 <div className="flex items-center gap-4">
                     <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700">

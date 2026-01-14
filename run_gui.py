@@ -21,8 +21,7 @@ def run_gui():
         print("Error: Port 5173 is already in use. Is the frontend already running?")
         sys.exit(1)
     
-    # 1. Start Backend
-    backend_cmd = [sys.executable, "-m", "uvicorn", "gui.backend.main:app", "--reload", "--host", "0.0.0.0", "--port", "8000"]
+    backend_cmd = [sys.executable, "-m", "uvicorn", "gui.backend.main:app", "--reload", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
     backend_process = subprocess.Popen(backend_cmd, cwd=os.getcwd())
     print(f"Backend started (PID: {backend_process.pid})")
 

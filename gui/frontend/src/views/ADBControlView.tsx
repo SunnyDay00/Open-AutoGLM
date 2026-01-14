@@ -81,12 +81,17 @@ export default function ADBControlView() {
 
         setLoading({ ...loading, screenshot: true })
         try {
-            window.open('/api/adb/screenshot', '_blank')
-            setTimeout(() => {
-                setLoading({ ...loading, screenshot: false })
-            }, 1000)
+            const res = await fetch('/api/adb/screenshot', { method: 'POST' })
+            const data = await res.json()
+
+            if (data.status === 'success') {
+                alert(`截图已保存！\n路径: ${data.path}`)
+            } else {
+                alert(`截图失败: ${data.message}`)
+            }
         } catch (error) {
             alert(`截图失败: ${error}`)
+        } finally {
             setLoading({ ...loading, screenshot: false })
         }
     }
@@ -105,8 +110,8 @@ export default function ADBControlView() {
                     <Smartphone size={18} className="text-purple-400" />
                     <span className="text-sm text-slate-300 font-mono">{deviceId}</span>
                     <div className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium ${deviceConnected
-                            ? 'bg-green-500/10 text-green-400 border border-green-500/20'
-                            : 'bg-orange-500/10 text-orange-400 border border-orange-500/20'
+                        ? 'bg-green-500/10 text-green-400 border border-green-500/20'
+                        : 'bg-orange-500/10 text-orange-400 border border-orange-500/20'
                         }`}>
                         <div className={`w-1.5 h-1.5 rounded-full ${deviceConnected ? 'bg-green-400' : 'bg-orange-400'}`} />
                         {deviceConnected ? '已连接' : '未连接'}
@@ -175,8 +180,8 @@ export default function ADBControlView() {
                             </div>
                             <h3 className="text-xl font-bold text-slate-100">设备截图</h3>
                             <p className="text-sm text-slate-400">
-                                截取设备屏幕并下载<br />
-                                <span className="text-xs">(直接下载到浏览器)</span>
+                                截取设备屏幕并保存<br />
+                                <span className="text-xs">(保存到设置中配置的路径)</span>
                             </p>
                         </div>
                         {loading.screenshot && (

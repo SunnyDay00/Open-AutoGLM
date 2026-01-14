@@ -55,7 +55,12 @@ class DeviceFactory:
             import shutil
             PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../"))
             TEMP_SCREENSHOT_DIR = os.path.join(PROJECT_ROOT, "gui", "frontend", "temp_screenshots")
-            LATEST_SCREENSHOT_NAME = "latest_screenshot.png"
+            # Use device specific filename if possible
+            if device_id:
+                filename_suffix = device_id.replace(':', '_')
+                LATEST_SCREENSHOT_NAME = f"latest_{filename_suffix}.png"
+            else:
+                LATEST_SCREENSHOT_NAME = "latest_screenshot.png"
             
             os.makedirs(TEMP_SCREENSHOT_DIR, exist_ok=True)
             temp_screenshot_path = os.path.join(TEMP_SCREENSHOT_DIR, LATEST_SCREENSHOT_NAME)

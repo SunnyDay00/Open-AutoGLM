@@ -23,6 +23,7 @@ wheels/
 platform-tools
 开发计划书.txt
 chat_history.json
+截图
 
 # Virtual environments
 venv/
@@ -80,6 +81,9 @@ gui/frontend/coverage/
 
 # Local Configuration
 settings.json
+
+# Multi-device data storage
+data/
 
 # npm logs
 npm-debug.log*
