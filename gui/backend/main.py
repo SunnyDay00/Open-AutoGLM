@@ -115,16 +115,48 @@ def resolve_android_id(device_identifier: str) -> Optional[str]:
     if aid: return aid
     
     # 2. Check if the identifier itself is a known Android ID (folder exists)
-    # We use get_device_data_manager() locally to avoid circular import issues if any
     try:
         from gui.backend.data_manager import get_device_data_manager, PROJECT_ROOT
+        dm = get_device_data_manager()
+        potential_folder = dm.get_device_folder_name(device_identifier)
+        if os.path.exists(os.path.join(PROJECT_ROOT, "data", "devices", potential_folder)):
+            return device_identifier
     except:
-        return device_identifier # Fallback if imports fail
-        
-    dm = get_device_data_manager()
-    potential_folder = dm.get_device_folder_name(device_identifier)
-    if os.path.exists(os.path.join(PROJECT_ROOT, "data", "devices", potential_folder)):
-        return device_identifier
+        pass
+
+    # 3. NEW: Reverse lookup from saved device metadata (.device files)
+    # This handles the case where device was previously connected but cache is empty
+    try:
+        from gui.backend.data_manager import get_device_data_manager, PROJECT_ROOT
+        devices_dir = os.path.join(PROJECT_ROOT, "data", "devices")
+        if os.path.exists(devices_dir):
+            for folder in os.listdir(devices_dir):
+                device_file = os.path.join(devices_dir, folder, ".device")
+                if os.path.exists(device_file):
+                    try:
+                        with open(device_file, "r", encoding="utf-8") as f:
+                            meta = json.load(f)
+                            # Check if device_id matches
+                            if meta.get("device_id") == device_identifier:
+                                aid = meta.get("android_id")
+                                if aid:
+                                    # Update cache for future lookups
+                                    DEVICE_IP_TO_ANDROID_ID[device_identifier] = aid
+                                    return aid
+                    except:
+                        continue
+    except Exception as e:
+        print(f"DEBUG: Metadata lookup failed: {e}")
+
+    # 4. Active Resolution: Try via ADB
+    # This covers cases where device is online but not yet polled/cached
+    print(f"DEBUG: Attempting to resolve Android ID for '{device_identifier}' via ADB...")
+    info = get_device_info_via_adb(device_identifier)
+    aid = info.get("android_id")
+    if aid and aid != "Unknown" and not aid.startswith("Error"):
+        # Update Cache
+        DEVICE_IP_TO_ANDROID_ID[device_identifier] = aid
+        return aid
         
     return None
 
@@ -170,7 +202,8 @@ class ConnectionManager:
         for log in self.log_history:
             try:
                 await websocket.send_text(log)
-            except: pass
+            except Exception:
+                pass  # Skip if websocket send fails
 
     def disconnect(self, websocket: WebSocket):
         self.active_connections.remove(websocket)
@@ -184,8 +217,8 @@ class ConnectionManager:
         for connection in self.active_connections:
             try:
                 await connection.send_text(message)
-            except:
-                pass
+            except Exception:
+                pass  # Connection may have closed
 
 manager = ConnectionManager()
 
@@ -227,12 +260,12 @@ def get_devices():
 # (Paths moved to top of file)
 
 
-CHAT_HISTORY_FILE = os.path.join(PROJECT_ROOT, "chat_history.json")
-TEMP_SCREENSHOT_DIR = os.path.join(PROJECT_ROOT, "gui", "frontend", "temp_screenshots")
-LATEST_SCREENSHOT_NAME = "latest_screenshot.png"
+# DEPRECATED: Global chat history file, no longer used
+# Chat history is now stored per-device at data/devices/{android_id}/chat_history.json
+CHAT_HISTORY_FILE = os.path.join(PROJECT_ROOT, "chat_history.json")  # Keep for any legacy references
 
-# Ensure temp screenshot directory exists
-os.makedirs(TEMP_SCREENSHOT_DIR, exist_ok=True)
+# Note: Legacy TEMP_SCREENSHOT_DIR removed. Screenshots are now saved to
+# data/devices/{android_id}/temp_screenshots/ by agent.py
 
 # File Locks
 history_lock = threading.Lock()
@@ -323,10 +356,10 @@ def test_connection():
     # Resolve Android ID for storage lookup
     android_id = resolve_android_id(target_device)
     if not android_id:
-         # If we can't resolve it, we can't find its profile in the new system
-         # UNLESS it's a legacy folder?
-         # For now, assume failure or try using target_device as is
-         android_id = target_device
+         # Failed to resolve. If it's not in cache and not an offline folder, we can't find the profile.
+         # Unless we allow legacy IP folders, but we want to migrate away.
+         # We'll fail if we can't identify it.
+         return {"status": "error", "result": f"测试失败: 无法识别设备身份 (Android ID)。请确保设备已连接。"}
          
     assigned_profile_name = dm.get_profile_name(android_id)
     
@@ -352,48 +385,49 @@ def test_connection():
     ))
 
 # Chat history management
-# Using absolute path defined above
-# CHAT_HISTORY_FILE already defined
+# Device-specific history only (global history deprecated)
 
 def load_chat_history(device_id: Optional[str] = None):
-    # Use device specific file if device_id provided
-    if device_id:
-        dm = get_device_data_manager()
-        android_id = resolve_android_id(device_id) or device_id # Fallback to input if fail
-        path = dm.get_chat_history_path(android_id)
-        if os.path.exists(path):
-            try:
-                with history_lock:
-                    with open(path, "r", encoding="utf-8") as f:
-                        return json.load(f)
-            except Exception as e:
-                print(f"Error loading device history ({device_id}): {e}")
-        return [{"role": "assistant", "content": f"您好！我是 AutoGLM。已连接到设备 {device_id}。"}]
-
-    # Fallback to default global history
-    if os.path.exists(CHAT_HISTORY_FILE):
+    """Load chat history for a specific device. Global history is deprecated."""
+    if not device_id:
+        # No device specified - prompt user to select one
+        return [{"role": "assistant", "content": "您好！我是 AutoGLM。请先在设备页面选择一个设备。"}]
+    
+    dm = get_device_data_manager()
+    android_id = resolve_android_id(device_id)
+    if not android_id:
+        # Can't resolve device, return error
+        return [{"role": "assistant", "content": f"您好！我是 AutoGLM。无法加载设备 {device_id} 的历史记录 (未识别)。请刷新设备列表。"}]
+         
+    path = dm.get_chat_history_path(android_id)
+    if os.path.exists(path):
         try:
             with history_lock:
-                with open(CHAT_HISTORY_FILE, "r", encoding="utf-8") as f:
+                with open(path, "r", encoding="utf-8") as f:
                     return json.load(f)
         except Exception as e:
-            print(f"Error loading chat history: {e}")
-    return [{"role": "assistant", "content": "您好！我是 AutoGLM。今天想让我帮您控制手机做些什么？"}]
+            print(f"Error loading device history ({device_id}): {e}")
+    return [{"role": "assistant", "content": f"您好！我是 AutoGLM。已连接到设备。今天想让我帮您做些什么？"}]
 
 def save_chat_history(history, device_id: Optional[str] = None):
+    """Save chat history for a specific device. Global history is deprecated."""
+    if not device_id:
+        print("Warning: save_chat_history called without device_id, skipping save.")
+        return
+        
     try:
         with history_lock:
-            if device_id:
-                dm = get_device_data_manager()
-                android_id = resolve_android_id(device_id) or device_id
-                path = dm.get_chat_history_path(android_id)
-                # Ensure directory exists
-                os.makedirs(os.path.dirname(path), exist_ok=True)
-                with open(path, "w", encoding="utf-8") as f:
-                    json.dump(history, f, ensure_ascii=False, indent=2)
-            else:
-                with open(CHAT_HISTORY_FILE, "w", encoding="utf-8") as f:
-                    json.dump(history, f, ensure_ascii=False, indent=2)
+            dm = get_device_data_manager()
+            android_id = resolve_android_id(device_id)
+            if not android_id:
+                print(f"Warning: Skipping history save for unidentified device '{device_id}'")
+                return
+                
+            path = dm.get_chat_history_path(android_id)
+            # Ensure directory exists
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(history, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"Error saving chat history: {e}")
 
@@ -408,8 +442,8 @@ def clear_history(device_id: Optional[str] = None):
     if not device_id and agent:
         try:
              agent.reset()
-        except:
-             pass
+        except Exception as e:
+             print(f"Warning: Failed to reset agent: {e}")
     
     initial_history = [{"role": "assistant", "content": 
         f"您好！我是 AutoGLM。已连接到设备 {device_id}。" if device_id else "您好！我是 AutoGLM。今天想让我帮您控制手机做些什么？"
@@ -422,7 +456,7 @@ def get_beijing_time():
     from datetime import datetime
     try:
         return datetime.now().strftime("%H:%M")
-    except:
+    except Exception:
         return "Time Error"
 
 @app.post("/api/stop")
@@ -467,7 +501,9 @@ async def health_checker():
             
             if target_device:
                 dm = get_device_data_manager()
-                pname = dm.get_device_profile(target_device)
+                # Fix: Resolve Android ID before looking up profile
+                aid = resolve_android_id(target_device) or target_device
+                pname = dm.get_profile_name(aid)
                 if pname:
                     pm = get_profile_manager()
                     profile = pm.get_profile(pname)
@@ -650,7 +686,7 @@ def get_device_info_via_adb(device_id: str) -> dict:
                 shell=True, capture_output=True, text=True, timeout=5
             )
             return result.stdout.strip()
-        except:
+        except (subprocess.TimeoutExpired, OSError) as e:
             return ""
     
     try:
@@ -722,8 +758,12 @@ def set_device_profile(device_id: str, request: SetDeviceProfileRequest):
     if not pm.get_profile(request.profile_name):
         raise HTTPException(status_code=404, detail=f"Profile '{request.profile_name}' not found")
         
-    dm.set_device_profile(device_id, request.profile_name)
-    return {"status": "success", "message": f"Profile '{request.profile_name}' assigned to device '{device_id}'"}
+    android_id = resolve_android_id(device_id)
+    if not android_id:
+        raise HTTPException(status_code=400, detail=f"Cannot resolve Android ID for device '{device_id}'. Please ensure device is connected.")
+        
+    dm.set_profile_name(android_id, request.profile_name)
+    return {"status": "success", "message": f"Profile '{request.profile_name}' assigned to device '{device_id}' (ID: {android_id})"}
 
 @app.get("/api/devices/detailed")
 def get_all_devices_detailed():
@@ -1084,14 +1124,8 @@ def get_latest_screenshot(device_id: Optional[str] = None):
         "timestamp": None
     }
 
-@app.get("/temp_screenshots/{filename}")
-def get_screenshot_file(filename: str):
-    """Serve screenshot files from temp directory."""
-    file_path = os.path.join(TEMP_SCREENSHOT_DIR, filename)
-    if os.path.exists(file_path):
-        return FileResponse(file_path, media_type="image/png")
-    from fastapi import HTTPException
-    raise HTTPException(status_code=404, detail="File not found")
+# Note: Legacy /temp_screenshots/{filename} route removed.
+# Screenshots are now served via /devices_data/{folder}/temp_screenshots/
 
 
 @app.post("/api/chat")

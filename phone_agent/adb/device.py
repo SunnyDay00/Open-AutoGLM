@@ -30,7 +30,7 @@ def get_current_app(device_id: str | None = None) -> str:
                 adb_prefix + ["shell", "dumpsys", "window"], 
                 capture_output=True, 
                 text=True, 
-                encoding="utf-8"
+
             )
             
             if result.returncode != 0:

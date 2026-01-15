@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Smartphone, RefreshCw, Unplug, Check, Settings, AlertCircle, ChevronDown, X, Info } from 'lucide-react'
+import { useDeviceContext } from '../App'
 
 interface DeviceInfo {
     device_id: string
@@ -22,6 +23,7 @@ interface Profile {
 
 
 export default function DevicesView() {
+    const { setUrlDeviceId } = useDeviceContext()
     const [devices, setDevices] = useState<DeviceInfo[]>([])
     const [loading, setLoading] = useState(false)
     const [profiles, setProfiles] = useState<Profile[]>([])
@@ -62,7 +64,12 @@ export default function DevicesView() {
         try {
             const res = await fetch('/api/global-settings')
             const data = await res.json()
-            setCurrentDeviceId(data.last_selected_device || null)
+            const deviceId = data.last_selected_device || null
+            setCurrentDeviceId(deviceId)
+            // Also update URL parameter if device is already selected
+            if (deviceId) {
+                setUrlDeviceId(deviceId)
+            }
         } catch (e) {
             console.error('Failed to fetch global settings', e)
         }
@@ -97,6 +104,8 @@ export default function DevicesView() {
                 })
             })
             setCurrentDeviceId(deviceId)
+            // Update URL parameter for multi-device support
+            setUrlDeviceId(deviceId)
         } catch (e) {
             console.error('Failed to select device', e)
             alert('选择设备失败')

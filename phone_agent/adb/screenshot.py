@@ -55,31 +55,58 @@ def get_screenshot(device_id: str | None = None, timeout: int = 10) -> Screensho
             return _create_fallback_screenshot(is_sensitive=True)
 
         # Pull screenshot to local temp path
-        subprocess.run(
+        pull_result = subprocess.run(
             adb_prefix + ["pull", "/sdcard/tmp.png", temp_path],
             capture_output=True,
             text=True,
             timeout=5,
         )
 
+        # Check if file exists and has content
         if not os.path.exists(temp_path):
+            print(f"Screenshot pull failed: file not found at {temp_path}")
+            return _create_fallback_screenshot(is_sensitive=False)
+        
+        # Check file size (empty or too small means failure)
+        file_size = os.path.getsize(temp_path)
+        if file_size < 1000:  # Less than 1KB is likely invalid
+            print(f"Screenshot file too small ({file_size} bytes), likely corrupted")
+            try:
+                os.remove(temp_path)
+            except:
+                pass
             return _create_fallback_screenshot(is_sensitive=False)
 
         # Read and encode image
-        img = Image.open(temp_path)
-        width, height = img.size
+        try:
+            img = Image.open(temp_path)
+            img.load()  # Force load to catch deferred errors
+            width, height = img.size
+        except Exception as img_err:
+            print(f"Screenshot image invalid: {img_err}")
+            try:
+                os.remove(temp_path)
+            except:
+                pass
+            return _create_fallback_screenshot(is_sensitive=True)
 
         buffered = BytesIO()
         img.save(buffered, format="PNG")
         base64_data = base64.b64encode(buffered.getvalue()).decode("utf-8")
 
         # Cleanup
-        os.remove(temp_path)
+        try:
+            os.remove(temp_path)
+        except:
+            pass
 
         return Screenshot(
             base64_data=base64_data, width=width, height=height, is_sensitive=False
         )
 
+    except subprocess.TimeoutExpired:
+        print("Screenshot timeout: device may be unresponsive")
+        return _create_fallback_screenshot(is_sensitive=False)
     except Exception as e:
         print(f"Screenshot error: {e}")
         return _create_fallback_screenshot(is_sensitive=False)

@@ -10,12 +10,16 @@ export default defineConfig({
         target: 'http://localhost:8000',
         changeOrigin: true,
       },
+      '/devices_data': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
       '/ws': {
         target: 'ws://localhost:8000',
         ws: true,
         configure: (proxy, _options) => {
           proxy.on('error', (err, _req, _res) => {
-            if (err.message.includes('ECONNRESET') || err.message.includes('ECONNABORTED')) {
+            if (err.message.indexOf('ECONNRESET') !== -1 || err.message.indexOf('ECONNABORTED') !== -1) {
               // Ignore harmless socket errors
               return; 
             }

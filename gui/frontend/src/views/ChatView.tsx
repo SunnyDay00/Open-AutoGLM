@@ -145,14 +145,20 @@ export default function ChatView() {
     const prevLoading = useRef(false);
     useEffect(() => {
         if (prevLoading.current && !loading && !isStreaming.current) {
-            fetch('/api/history')
+            // Use currentDevice (from backend status) for history refresh
+            // This ensures we read from the same file that backend wrote to
+            const deviceForHistory = urlDeviceId || currentDevice
+            const url = deviceForHistory && deviceForHistory !== 'Auto-Detect' && deviceForHistory !== 'Unknown'
+                ? `/api/history?device_id=${encodeURIComponent(deviceForHistory)}`
+                : '/api/history'
+            fetch(url)
                 .then(res => res.json())
                 .then(data => {
                     if (data.history) setMessages(data.history)
                 })
         }
         prevLoading.current = loading;
-    }, [loading])
+    }, [loading, urlDeviceId, currentDevice])
 
     const handleStop = async () => {
         try {
@@ -285,8 +291,30 @@ export default function ChatView() {
                                 let newContent = lastMsg.content
 
                                 if (event.action) {
-                                    const actionStr = JSON.stringify(event.action)
-                                    newThinking = `执行动作: ${actionStr}`
+                                    const action = event.action
+                                    const actionType = action.action || action._metadata
+
+                                    // Format action display based on type
+                                    let actionDisplay = `[${actionType}]`
+
+                                    // Add relevant parameters
+                                    if (action.element) actionDisplay += ` 坐标:[${action.element}]`
+                                    if (action.app) actionDisplay += ` 应用:${action.app}`
+                                    if (action.text) actionDisplay += ` 文本:${action.text.substring(0, 20)}${action.text.length > 20 ? '...' : ''}`
+                                    if (action.duration) actionDisplay += ` 等待:${action.duration}`
+                                    if (action.start && action.end) actionDisplay += ` 滑动:[${action.start}]->[${action.end}]`
+
+                                    newThinking = `执行动作: ${actionDisplay}`
+
+                                    // If action has message (Take_over, Note, etc.), show it prominently
+                                    if (action.message) {
+                                        // Add action message to content for important actions
+                                        if (actionType === 'Take_over' || actionType === 'Note' || actionType === 'Interact') {
+                                            newContent += (newContent ? '\n\n' : '') + `⚠️ [${actionType}] ${action.message}`
+                                        } else {
+                                            newThinking += `\n消息: ${action.message.substring(0, 100)}...`
+                                        }
+                                    }
                                 }
 
                                 if (event.message) {

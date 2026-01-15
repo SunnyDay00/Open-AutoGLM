@@ -353,80 +353,174 @@ def parse_action(response: str) -> dict[str, Any]:
     Raises:
         ValueError: If the response cannot be parsed.
     """
-    print(f"Parsing action: {response}")
+    original_response = response  # Keep original for error logging
+    
     try:
         response = response.strip()
-        if response.startswith('do(action="Type"') or response.startswith(
-            'do(action="Type_Name"'
-        ):
-            text = response.split("text=", 1)[1][1:-2]
-            action = {"_metadata": "do", "action": "Type", "text": text}
-            return action
-        elif response.startswith("do"):
-            # Use AST parsing instead of eval for safety
+        
+        # === Handle Type/Type_Name actions ===
+        # These need special handling due to text content that may contain special chars
+        if response.startswith('do(action="Type"') or response.startswith('do(action="Type_Name"'):
             try:
-                # Escape special characters (newlines, tabs, etc.) for valid Python syntax
-                response = response.replace('\n', '\\n')
-                response = response.replace('\r', '\\r')
-                response = response.replace('\t', '\\t')
-
-                tree = ast.parse(response, mode="eval")
+                # Try AST parsing first (safer)
+                escaped = response.replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
+                tree = ast.parse(escaped, mode="eval")
+                if isinstance(tree.body, ast.Call):
+                    action = {"_metadata": "do"}
+                    for keyword in tree.body.keywords:
+                        action[keyword.arg] = ast.literal_eval(keyword.value)
+                    return action
+            except (SyntaxError, ValueError) as ast_err:
+                # Fallback to string extraction for Type actions
+                print(f"[parse_action] AST failed for Type, using fallback: {ast_err}")
+                try:
+                    if 'text="' in response:
+                        # Extract text between text=" and the closing ")
+                        text_start = response.index('text="') + 6
+                        # Find matching closing quote (handle escaped quotes)
+                        text_end = len(response) - 2  # Assume ends with ")
+                        text = response[text_start:text_end]
+                        action = {"_metadata": "do", "action": "Type", "text": text}
+                        return action
+                    elif "text='" in response:
+                        text_start = response.index("text='") + 6
+                        text_end = len(response) - 2
+                        text = response[text_start:text_end]
+                        action = {"_metadata": "do", "action": "Type", "text": text}
+                        return action
+                except Exception as fallback_err:
+                    print(f"[parse_action] ERROR: Type action fallback failed: {fallback_err}")
+                    raise ValueError(f"Failed to parse Type action: {fallback_err}")
+        
+        # === Handle other do() actions ===
+        elif response.startswith("do"):
+            try:
+                # Escape special characters for valid Python syntax
+                escaped = response.replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
+                tree = ast.parse(escaped, mode="eval")
+                
                 if not isinstance(tree.body, ast.Call):
                     raise ValueError("Expected a function call")
 
-                call = tree.body
-                # Extract keyword arguments safely
                 action = {"_metadata": "do"}
-                for keyword in call.keywords:
+                for keyword in tree.body.keywords:
                     key = keyword.arg
                     value = ast.literal_eval(keyword.value)
                     action[key] = value
 
                 return action
             except (SyntaxError, ValueError) as e:
-                raise ValueError(f"Failed to parse do() action: {e}")
+                # Fallback: Try regex extraction for actions with message (Take_over, Note, etc.)
+                print(f"[parse_action] WARNING: AST failed for do(), using fallback: {e}")
+                try:
+                    # Extract action name
+                    action_match = re.search(r'action\s*=\s*["\']([^"\']+)["\']', response)
+                    if action_match:
+                        action_name = action_match.group(1)
+                        action = {"_metadata": "do", "action": action_name}
+                        
+                        # Extract message if present (greedy match to end)
+                        msg_match = re.search(r'message\s*=\s*["\'](.+)["\']?\s*\)?$', response, re.DOTALL)
+                        if msg_match:
+                            message = msg_match.group(1)
+                            # Clean up trailing quote and parenthesis
+                            if message.endswith('")') or message.endswith("')"):
+                                message = message[:-2]
+                            elif message.endswith('"') or message.endswith("'"):
+                                message = message[:-1]
+                            action["message"] = message
+                        
+                        # Extract element if present (for Tap, Swipe, etc.)
+                        elem_match = re.search(r'element\s*=\s*\[([^\]]+)\]', response)
+                        if elem_match:
+                            coords = elem_match.group(1).split(',')
+                            action["element"] = [int(c.strip()) for c in coords]
+                        
+                        # Extract other common parameters
+                        app_match = re.search(r'app\s*=\s*["\']([^"\']+)["\']', response)
+                        if app_match:
+                            action["app"] = app_match.group(1)
+                        
+                        duration_match = re.search(r'duration\s*=\s*["\']([^"\']+)["\']', response)
+                        if duration_match:
+                            action["duration"] = duration_match.group(1)
+                        
+                        return action
+                    else:
+                        raise ValueError("Could not extract action name")
+                except Exception as fallback_err:
+                    print(f"[parse_action] ERROR: do() fallback also failed: {fallback_err}")
+                    print(f"[parse_action] ERROR: Original response: {original_response}")
+                    raise ValueError(f"Failed to parse do() action: {e}")
 
+        # === Handle finish() actions ===
         elif response.startswith("finish"):
             try:
-                # Use AST parsing for finish as well
-                response = response.replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
-                tree = ast.parse(response, mode="eval")
+                escaped = response.replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
+                tree = ast.parse(escaped, mode="eval")
+                
                 if not isinstance(tree.body, ast.Call):
                     raise ValueError("Expected a function call")
                 
                 call = tree.body
                 action = {"_metadata": "finish"}
                 
-                # Handle finish(message="...") or finish("...")
+                # Handle finish(message="...") keyword argument
                 if call.keywords:
                     for keyword in call.keywords:
                         if keyword.arg == "message":
                             action["message"] = ast.literal_eval(keyword.value)
+                # Handle finish("...") positional argument
                 elif call.args:
-                     # Positional argument if any
-                     if isinstance(call.args[0], (ast.Str, ast.Constant)):
-                         action["message"] = ast.literal_eval(call.args[0]) if hasattr(ast, 'Constant') else call.args[0].s
+                    if isinstance(call.args[0], (ast.Str, ast.Constant)):
+                        action["message"] = ast.literal_eval(call.args[0]) if hasattr(ast, 'Constant') else call.args[0].s
                 
+                # If no message found, extract from string as fallback
                 if "message" not in action:
-                     # Fallback string extraction if parsing args failed but call valid?
-                     # Try brittle extraction as fallback
-                     action["message"] = str(response.replace("finish(message=", "")[1:-2])
-
-            except Exception:
-                # Fallback to brittle legacy parsing
+                    if 'message="' in response:
+                        msg_start = response.index('message="') + 9
+                        msg_end = response.rindex('"')
+                        action["message"] = response[msg_start:msg_end]
+                    elif "message='" in response:
+                        msg_start = response.index("message='") + 9
+                        msg_end = response.rindex("'")
+                        action["message"] = response[msg_start:msg_end]
+                    else:
+                        action["message"] = "Task completed"
+                
+                return action
+                
+            except (SyntaxError, ValueError) as e:
+                # Fallback for malformed finish()
+                print(f"[parse_action] WARNING: AST parse failed for finish, using fallback: {e}")
                 try:
-                    action = {
-                        "_metadata": "finish",
-                        "message": response.replace("finish(message=", "")[1:-2],
-                    }
-                except:
-                     raise ValueError(f"Failed to parse finish action: {response}")
-            return action
+                    if 'message="' in response:
+                        msg_start = response.index('message="') + 9
+                        msg_end = response.rindex('"')
+                        message = response[msg_start:msg_end]
+                    elif "message='" in response:
+                        msg_start = response.index("message='") + 9
+                        msg_end = response.rindex("'")
+                        message = response[msg_start:msg_end]
+                    else:
+                        message = response.replace("finish(", "").rstrip(")")
+                    
+                    action = {"_metadata": "finish", "message": message}
+                    return action
+                except Exception as fallback_err:
+                    print(f"[parse_action] ERROR: finish() fallback failed: {fallback_err}")
+                    raise ValueError(f"Failed to parse finish action: {fallback_err}")
         else:
-            raise ValueError(f"Failed to parse action: {response}")
-        return action
+            print(f"[parse_action] ERROR: Unknown action format: {response[:100]}")
+            raise ValueError(f"Unknown action format, expected 'do(...)' or 'finish(...)': {response[:100]}")
+            
+    except ValueError:
+        # Re-raise ValueError as-is (already logged)
+        raise
     except Exception as e:
-        raise ValueError(f"Failed to parse action: {e}")
+        print(f"[parse_action] ERROR: Unexpected error: {type(e).__name__}: {e}")
+        print(f"[parse_action] ERROR: Original response: {original_response}")
+        raise ValueError(f"Failed to parse action: {type(e).__name__}: {e}")
 
 
 def do(**kwargs) -> dict[str, Any]:

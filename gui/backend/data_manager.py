@@ -132,7 +132,8 @@ class ProfileManager:
                         with open(os.path.join(PROFILES_DIR, f), "r", encoding="utf-8") as file:
                             data = json.load(file)
                             profiles.append(data.get("name", f[:-5]))
-                    except:
+                    except (json.JSONDecodeError, IOError) as e:
+                        # Fallback to filename if JSON is corrupted
                         profiles.append(f[:-5])
         return profiles
 
@@ -148,7 +149,7 @@ class ProfileManager:
                             data = json.load(file)
                             if data.get("name") == name:
                                 return Profile.from_dict(data)
-                    except:
+                    except (json.JSONDecodeError, IOError):
                         continue
         return None
 
@@ -203,7 +204,7 @@ class ProfileManager:
                             if data.get("name") == name:
                                 target_path = path
                                 break
-                    except:
+                    except (json.JSONDecodeError, IOError):
                         continue
         
         # Delete file if found (outside resource context to avoid lock issues)
@@ -308,7 +309,8 @@ class DeviceDataManager:
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     return json.load(f)
-            except:
+            except (json.JSONDecodeError, IOError) as e:
+                print(f"Warning: Failed to load device metadata: {e}")
                 return None
         return None
 
@@ -333,7 +335,8 @@ class DeviceDataManager:
             if os.path.exists(path):
                 with open(path, "r", encoding="utf-8") as f:
                     return f.read().strip()
-        except:
+        except (IOError, OSError) as e:
+            print(f"Warning: Failed to read profile name: {e}")
             pass
         return None
 
@@ -389,7 +392,8 @@ class GlobalSettingsManager:
                 with open(GLOBAL_SETTINGS_FILE, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     self._settings = GlobalSettings.from_dict(data)
-            except:
+            except (json.JSONDecodeError, IOError) as e:
+                print(f"Warning: Failed to load global settings: {e}")
                 self._settings = GlobalSettings()
         else:
             self._settings = GlobalSettings()

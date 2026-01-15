@@ -90,3 +90,6 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+BUG_REPORT.md
+AUDIT_REPORT.md
+DEEP_IMPACT_ANALYSIS.md

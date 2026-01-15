@@ -192,9 +192,34 @@ class PhoneAgent:
              return StepResult(False, True, None, "", "任务已由用户停止")
 
         # Capture current screen state
-        device_factory = get_device_factory()
-        screenshot = device_factory.get_screenshot(self.agent_config.device_id)
-        current_app = device_factory.get_current_app(self.agent_config.device_id)
+        try:
+            device_factory = get_device_factory()
+            screenshot = device_factory.get_screenshot(self.agent_config.device_id)
+            current_app = device_factory.get_current_app(self.agent_config.device_id)
+            
+            # Save screenshot to configured path if set
+            if self.agent_config.screenshot_save_path:
+                try:
+                    import os
+                    import base64
+                    os.makedirs(self.agent_config.screenshot_save_path, exist_ok=True)
+                    # We consistently name it latest_screenshot.png for the UI to poll
+                    file_path = os.path.join(self.agent_config.screenshot_save_path, "latest_screenshot.png")
+                    with open(file_path, "wb") as f:
+                        f.write(base64.b64decode(screenshot.base64_data))
+                except Exception as save_err:
+                     if self.agent_config.verbose:
+                         print(f"Warning: Failed to save screenshot to {self.agent_config.screenshot_save_path}: {save_err}")
+        except Exception as e:
+            if self.agent_config.verbose:
+                traceback.print_exc()
+            return StepResult(
+                success=False,
+                finished=True,
+                action=None,
+                thinking="",
+                message=f"Device error: {e}",
+            )
 
         if self._stop_flag:
              return StepResult(False, True, None, "", "任务已由用户停止")
