@@ -1441,6 +1441,9 @@ def chat(request: ChatRequest):
             all_task_outputs = []
             all_actions = []  # Collect all action steps for history
 
+            # Log Command
+            log_queue.put(f"[{target_device}] [Command] {request.message}")
+
             for loop_idx in range(request.loop_count):
                 if agent.is_stopping:
                     break
@@ -1460,6 +1463,12 @@ def chat(request: ChatRequest):
                     
                     step_output = ""
                     for step in agent.run_stream(task):
+                        # Log thought process if available
+                        if hasattr(step, 'thinking') and step.thinking:
+                            # Format: [DeviceID] [Thought] content
+                            thought_log = f"[{target_device}] [Thought] {step.thinking}"
+                            log_queue.put(thought_log)
+
                         # Ensure fields are serializable
                         action_desc = step.action
                         if hasattr(action_desc, 'to_dict'): action_desc = action_desc.to_dict()
@@ -1469,7 +1478,16 @@ def chat(request: ChatRequest):
                         # Process actions: Tap, Type, Swipe, Launch, etc. (temporary, shown in real-time only)
                         if action_desc:
                             action_type = action_desc.get('action') or action_desc.get('_metadata')
-                            key_actions = ['Take_over', 'finish', 'Note', 'Interact']
+                            
+                            # Special handling for 'finish'
+                            if action_type == 'finish':
+                                # Log full result to file
+                                finish_msg = action_desc.get('message', '')
+                                log_queue.put(f"[{target_device}] [Result] {finish_msg}")
+                                # DO NOT add to all_actions, so it won't be shown in "Execution Steps" UI
+                                pass
+                            
+                            key_actions = ['Take_over', 'Note', 'Interact'] # Removed 'finish' from here
                             if action_type in key_actions:
                                 # Avoid duplicate consecutive actions (same type + same message)
                                 is_duplicate = False
