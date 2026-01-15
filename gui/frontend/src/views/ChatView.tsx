@@ -1,6 +1,19 @@
 import { useState, useRef, useEffect } from 'react'
 import { Send, Bot, User, Trash2, Square } from 'lucide-react'
 
+interface Action {
+    _metadata?: string
+    action?: string
+    element?: number[]
+    text?: string
+    app?: string
+    message?: string
+    start?: number[]
+    end?: number[]
+    duration?: string
+    content?: string
+}
+
 interface Message {
     role: 'user' | 'assistant'
     content: string
@@ -8,6 +21,7 @@ interface Message {
     time?: string
     duration?: string
     image?: string
+    actions?: Action[]
 }
 
 import { useDeviceContext } from '../App'
@@ -287,7 +301,12 @@ export default function ChatView() {
                                 addLogLine(event.content)
                                 return newMsgs.map((m, i) => i === newMsgs.length - 1 ? { ...m, thinking: event.content } : m)
                             } else if (event.type === 'step') {
-                                let newThinking = event.thinking || lastMsg.thinking
+                                // Preserve model's thinking process
+                                let newThinking = lastMsg.thinking || ''
+                                if (event.thinking && event.thinking !== newThinking) {
+                                    // Only update if we have new thinking content
+                                    newThinking = event.thinking
+                                }
                                 let newContent = lastMsg.content
 
                                 if (event.action) {
@@ -304,7 +323,8 @@ export default function ChatView() {
                                     if (action.duration) actionDisplay += ` 等待:${action.duration}`
                                     if (action.start && action.end) actionDisplay += ` 滑动:[${action.start}]->[${action.end}]`
 
-                                    newThinking = `执行动作: ${actionDisplay}`
+                                    // Append action to thinking (don't overwrite model's thinking)
+                                    newThinking = `${newThinking ? newThinking + '\n' : ''}执行: ${actionDisplay}`
 
                                     // If action has message (Take_over, Note, etc.), show it prominently
                                     if (action.message) {
@@ -368,14 +388,25 @@ export default function ChatView() {
     }
 
     const clearHistory = async () => {
+        // Show confirmation dialog
+        if (!confirm('⚠️ 确定要清空对话历史吗？\n\n此操作将永久删除当前设备的所有对话记录，无法恢复！')) {
+            return
+        }
+
         try {
-            const res = await fetch('/api/history', { method: 'DELETE' })
+            // Pass device_id to delete the correct device's history
+            const deviceId = urlDeviceId || currentDevice
+            const url = deviceId && deviceId !== 'Unknown' && deviceId !== 'Auto-Detect'
+                ? `/api/history?device_id=${encodeURIComponent(deviceId)}`
+                : '/api/history'
+            const res = await fetch(url, { method: 'DELETE' })
             const data = await res.json()
             if (data.history) {
                 setMessages(data.history)
             }
         } catch (e) {
             console.error("Failed to clear history:", e)
+            alert('清空历史失败，请重试')
         }
     }
 
@@ -531,13 +562,13 @@ export default function ChatView() {
                                 </div>
                             )}
 
-                            <div className={`max-w-[80%] rounded-2xl px-5 py-3 ${msg.role === 'user'
-                                ? 'bg-gradient-to-br from-blue-600 to-indigo-600 text-white rounded-tr-none shadow-lg shadow-blue-900/20'
-                                : 'bg-slate-800 text-slate-200 rounded-tl-none border border-slate-700 shadow-sm'
+                            <div className={`rounded-2xl px-5 py-3 ${msg.role === 'user'
+                                ? 'max-w-[70%] bg-gradient-to-br from-blue-600 to-indigo-600 text-white rounded-tr-none shadow-lg shadow-blue-900/20'
+                                : 'w-full bg-slate-800 text-slate-200 rounded-tl-none border border-slate-700 shadow-sm'
                                 }`}>
                                 {msg.thinking && (
-                                    <div className="text-xs text-slate-400 mb-2 italic border-l-2 border-slate-600 pl-2">
-                                        思考中: {msg.thinking}
+                                    <div className="text-sm text-slate-300 mb-3 border-l-2 border-blue-500/50 pl-3 py-1 bg-slate-700/30 rounded-r whitespace-pre-wrap">
+                                        {msg.thinking}
                                     </div>
                                 )}
                                 {msg.role === 'user' ? (
@@ -586,6 +617,46 @@ export default function ChatView() {
                                                 </div>
                                             )
                                         })}
+                                    </div>
+                                )}
+                                {/* Display actions if present */}
+                                {msg.actions && msg.actions.length > 0 && (
+                                    <div className="mt-3 pt-3 border-t border-slate-700/50">
+                                        <div className="text-xs text-slate-400 mb-2 font-semibold">执行步骤:</div>
+                                        <div className="space-y-1">
+                                            {msg.actions.map((action, i) => {
+                                                const actionType = action.action || action._metadata || 'unknown'
+                                                const isImportant = ['Take_over', 'finish', 'Note', 'Interact'].includes(actionType)
+                                                const isFinish = actionType === 'finish' || action._metadata === 'finish'
+
+                                                // Build action description
+                                                let desc = ''
+                                                if (action.element) desc += ` 坐标:[${action.element}]`
+                                                if (action.app) desc += ` 应用:${action.app}`
+                                                if (action.text) desc += ` 文本:${action.text.substring(0, 15)}${action.text.length > 15 ? '...' : ''}`
+                                                if (action.start && action.end) desc += ` [${action.start}]->[${action.end}]`
+                                                if (action.duration) desc += ` ${action.duration}`
+
+                                                return (
+                                                    <div key={i} className={`text-xs px-2 py-1 rounded flex items-start gap-2 ${isFinish ? 'bg-green-500/10 text-green-400' :
+                                                        isImportant ? 'bg-amber-500/10 text-amber-400' :
+                                                            'bg-slate-700/30 text-slate-400'
+                                                        }`}>
+                                                        <span className="font-mono font-medium">
+                                                            {isFinish ? '✅' : isImportant ? '⚠️' : '▸'} [{actionType}]
+                                                        </span>
+                                                        <span className="flex-1">
+                                                            {desc}
+                                                            {action.message && (
+                                                                <span className="block mt-0.5 text-slate-300">
+                                                                    {action.message.substring(0, 80)}{action.message.length > 80 ? '...' : ''}
+                                                                </span>
+                                                            )}
+                                                        </span>
+                                                    </div>
+                                                )
+                                            })}
+                                        </div>
                                     </div>
                                 )}
                                 {msg.time && (

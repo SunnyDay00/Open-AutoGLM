@@ -302,6 +302,17 @@ class DeviceDataManager:
         except Exception as e:
             print(f"Error saving device metadata: {e}")
 
+    def load_device_metadata(self, android_id: str) -> Optional[DeviceInfo]:
+        """Load device metadata by Android ID directly into DeviceInfo object."""
+        folder = self.get_device_folder_name(android_id)
+        data = self.get_device_metadata(folder)
+        if data:
+            # Filter keys to match DeviceInfo fields
+            valid_keys = DeviceInfo.__annotations__.keys()
+            filtered_data = {k: v for k, v in data.items() if k in valid_keys}
+            return DeviceInfo(**filtered_data)
+        return None
+
     def get_device_metadata(self, folder_name: str) -> Optional[dict]:
         """Load device metadata from folder."""
         path = os.path.join(DEVICES_DIR, folder_name, ".device")

@@ -188,51 +188,164 @@ class OutputTee(io.StringIO):
 sys.stdout = OutputTee(sys.stdout)
 # sys.stderr = OutputTee(sys.stderr) # Optionally capture stderr too
 
-# WebSocket Manager
+# WebSocket Manager with device-based filtering
 class ConnectionManager:
     def __init__(self):
         self.active_connections: List[WebSocket] = []
-        self.log_history: List[str] = [] # Store recent logs
+        self.connection_device_map: dict[WebSocket, Optional[str]] = {}  # Map connection to device_id
+        self.log_history: List[tuple[str, Optional[str]]] = []  # (message, device_id)
         self.max_history = 2000
 
-    async def connect(self, websocket: WebSocket):
+    async def connect(self, websocket: WebSocket, device_id: Optional[str] = None):
         await websocket.accept()
         self.active_connections.append(websocket)
-        # Replay history
-        for log in self.log_history:
+        self.connection_device_map[websocket] = device_id
+        # Replay history (filter by device_id if specified)
+        for log_msg, log_device_id in self.log_history:
             try:
-                await websocket.send_text(log)
+                # Send if: no device filter OR log has no device OR devices match
+                if device_id is None or log_device_id is None or log_device_id == device_id:
+                    await websocket.send_text(log_msg)
             except Exception:
                 pass  # Skip if websocket send fails
 
     def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+        if websocket in self.connection_device_map:
+            del self.connection_device_map[websocket]
 
-    async def broadcast(self, message: str):
-        # Add to history
-        self.log_history.append(message)
+    async def broadcast(self, message: str, device_id: Optional[str] = None):
+        # Add to history with device_id tag
+        self.log_history.append((message, device_id))
         if len(self.log_history) > self.max_history:
             self.log_history.pop(0)
-            
+        
         for connection in self.active_connections:
             try:
-                await connection.send_text(message)
+                conn_device_id = self.connection_device_map.get(connection)
+                # Send if: no device filter on connection OR log has no device OR devices match
+                if conn_device_id is None or device_id is None or conn_device_id == device_id:
+                    await connection.send_text(message)
             except Exception:
                 pass  # Connection may have closed
 
 manager = ConnectionManager()
+
+# Device-specific log file writing
+def write_device_log(device_id: Optional[str], message: str):
+    """Write log message to device-specific log file.
+    
+    Log files are stored at: data/devices/{android_id}/logs/YYYY-MM-DD.log
+    """
+    if not device_id:
+        return
+    
+    android_id = resolve_android_id(device_id)
+    if not android_id:
+        return
+    
+    try:
+        from datetime import datetime
+        dm = get_device_data_manager()
+        folder = dm.get_device_folder_name(android_id)
+        log_dir = os.path.join(PROJECT_ROOT, "data", "devices", folder, "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        
+        today = datetime.now().strftime("%Y-%m-%d")
+        log_file = os.path.join(log_dir, f"{today}.log")
+        
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(f"[{timestamp}] {message}\n")
+    except Exception as e:
+        print(f"Error writing device log: {e}")
 
 # Background Log Broadcaster
 async def log_broadcaster():
     while True:
         while not log_queue.empty():
             msg = log_queue.get()
-            await manager.broadcast(msg)
+            # Parse device_id from log message if present: [device_id] ...
+            device_id = None
+            if msg.startswith("[") and "]" in msg:
+                bracket_end = msg.index("]")
+                potential_device_id = msg[1:bracket_end]
+                # Check if it looks like a device ID (contains : or .)
+                if ":" in potential_device_id or "." in potential_device_id:
+                    device_id = potential_device_id
+            
+            # Write to device log file
+            if device_id:
+                write_device_log(device_id, msg)
+            
+            # Broadcast to WebSocket (with device filtering)
+            await manager.broadcast(msg, device_id)
         await asyncio.sleep(0.1)
 
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(log_broadcaster())
+    asyncio.create_task(health_checker())
+
+# Device Log APIs
+@app.get("/api/logs/{device_id}")
+def get_device_logs(device_id: str, date: Optional[str] = None):
+    """Get logs for a specific device and date.
+    
+    Args:
+        device_id: Device identifier (IP:port or android_id)
+        date: Optional date in YYYY-MM-DD format. Defaults to today.
+    
+    Returns:
+        Dict with logs content, available dates, and current date.
+    """
+    from datetime import datetime, timedelta
+    
+    android_id = resolve_android_id(device_id)
+    if not android_id:
+        return {"status": "error", "message": "无法解析设备ID", "logs": ""}
+    
+    dm = get_device_data_manager()
+    folder = dm.get_device_folder_name(android_id)
+    log_dir = os.path.join(PROJECT_ROOT, "data", "devices", folder, "logs")
+    
+    # Default to today
+    if not date:
+        date = datetime.now().strftime("%Y-%m-%d")
+    
+    # Find available log dates
+    available_dates = []
+    if os.path.exists(log_dir):
+        for f in sorted(os.listdir(log_dir), reverse=True):
+            if f.endswith(".log"):
+                available_dates.append(f.replace(".log", ""))
+    
+    # Read log file
+    log_file = os.path.join(log_dir, f"{date}.log")
+    logs = ""
+    if os.path.exists(log_file):
+        with open(log_file, "r", encoding="utf-8") as f:
+            logs = f.read()
+    
+    # Calculate prev/next dates
+    try:
+        current_date = datetime.strptime(date, "%Y-%m-%d")
+        prev_date = (current_date - timedelta(days=1)).strftime("%Y-%m-%d")
+        next_date = (current_date + timedelta(days=1)).strftime("%Y-%m-%d")
+    except ValueError:
+        prev_date = None
+        next_date = None
+    
+    return {
+        "status": "success",
+        "logs": logs,
+        "current_date": date,
+        "prev_date": prev_date,
+        "next_date": next_date,
+        "available_dates": available_dates,
+        "is_today": date == datetime.now().strftime("%Y-%m-%d")
+    }
 
 # APIs
 @app.get("/api/devices")
@@ -674,9 +787,21 @@ def get_supported_apps():
 # Device Info APIs
 # ============================================================================
 
-def get_device_info_via_adb(device_id: str) -> dict:
+# Cache for device info to avoid frequent ADB calls
+# Structure: {device_id: {"info": {...}, "timestamp": float}}
+_device_info_cache = {}
+_DEVICE_INFO_CACHE_TTL = 30  # Cache valid for 30 seconds
+
+def get_device_info_via_adb(device_id: str, use_cache: bool = True) -> dict:
     """Get detailed device info via ADB commands."""
     import subprocess
+    import time as _time
+    
+    # Check cache first to avoid frequent ADB calls
+    if use_cache and device_id in _device_info_cache:
+        cached = _device_info_cache[device_id]
+        if _time.time() - cached["timestamp"] < _DEVICE_INFO_CACHE_TTL:
+            return cached["info"]
     
     def run_adb_command(cmd_suffix: str) -> str:
         try:
@@ -722,22 +847,74 @@ def get_device_info_via_adb(device_id: str) -> dict:
             info["android_id"] = android_id.strip()
         else:
             info["android_id"] = "Unknown"
+        
+        # Update cache
+        import time as _time
+        _device_info_cache[device_id] = {
+            "info": info,
+            "timestamp": _time.time()
+        }
             
         return info
     except Exception as e:
-        return {
+        # Fallback: Try to load from "Known Devices" (offline data)
+        fallback_info = {
             "device_id": device_id,
             "android_id": "Unknown",
             "model": "Unknown",
             "brand": "Unknown",
             "android_version": "Unknown",
             "sdk_version": "Unknown",
-            "android_id": "Unknown",
             "resolution": "Unknown",
             "density": "Unknown",
             "connected": False,
-            "error_message": str(e)
+            "error_message": str(e) or "Device disconnected"
         }
+        
+        try:
+            # 1. Try mapping via global IP->AndroidID map
+            aid = DEVICE_IP_TO_ANDROID_ID.get(device_id)
+            print(f"[Debug] Fallback for {device_id}, Map Lookup AID: {aid}")
+            
+            # 2. If not found, iterate all known devices to find matching device_id (serial/ip)
+            if not aid:
+                try:
+                    dm_temp = get_device_data_manager()
+                    known_devices = dm_temp.list_known_devices()
+                    print(f"[Debug] Scanning {len(known_devices)} known devices from disk...")
+                    for known in known_devices:
+                        # known['device_id'] stores the last used IP/Serial
+                        k_dev_id = known.get('device_id')
+                        k_aid = known.get('android_id')
+                        # print(f"[Debug] Checking known: {k_aid} -> {k_dev_id}")
+                        if k_dev_id == device_id:
+                            aid = k_aid
+                            print(f"[Debug] Match found! AID: {aid}")
+                            if aid: break
+                except Exception as e:
+                    print(f"[Debug] Error listing known devices: {e}")
+                    import traceback
+                    traceback.print_exc()
+
+            # 3. If we found an Android ID, load its metadata
+            if aid:
+                dm_temp = get_device_data_manager()
+                meta = dm_temp.load_device_metadata(aid)
+                if meta:
+                    print(f"[Debug] Loaded metadata for {aid}: {meta.brand} {meta.model}")
+                    # Fill available info
+                    if meta.model: fallback_info['model'] = meta.model
+                    if meta.brand: fallback_info['brand'] = meta.brand
+                    if meta.android_version: fallback_info['android_version'] = meta.android_version
+                    if meta.sdk_version: fallback_info['sdk_version'] = meta.sdk_version
+                    if meta.android_id: fallback_info['android_id'] = meta.android_id
+                    if meta.resolution: fallback_info['resolution'] = meta.resolution
+                    if meta.density: fallback_info['density'] = str(meta.density)
+        except Exception as e:
+            print(f"[Debug] Fallback outer error: {e}")
+            pass
+            
+        return fallback_info
 
 @app.get("/api/device/{device_id}/info")
 def get_device_info(device_id: str):
@@ -793,8 +970,8 @@ def get_all_devices_detailed():
         for dev_obj in device_info_list:
             dev_id = dev_obj.device_id if hasattr(dev_obj, 'device_id') else str(dev_obj)
             
-            # Fetch fresh info (including Android ID)
-            info = get_device_info_via_adb(dev_id)
+            # Fetch fresh info (disable cache for accurate online status)
+            info = get_device_info_via_adb(dev_id, use_cache=False)
             aid = info.get("android_id")
             
             if aid and aid != "Unknown":
@@ -979,6 +1156,7 @@ def get_active_device_id() -> str:
 @app.post("/api/adb/reboot")
 def adb_reboot():
     """Reboot device via ADB in CMD window."""
+    import subprocess
     try:
         device_id = get_active_device_id()
         if not device_id:
@@ -987,9 +1165,10 @@ def adb_reboot():
         device_arg = f"-s {device_id} "
         command = f"adb {device_arg}reboot"
         
-        import subprocess
-        cmd = f'start cmd /k "{command} && echo. && echo Device will reboot. Press any key to close... && pause >nul"'
-        subprocess.Popen(cmd, shell=True)
+        # Open CMD with command displayed, wait for user to press Enter to execute
+        # Using set /p to pause and wait for user input before running
+        cmd_script = f'''start cmd /k "echo ===================================== & echo 即将执行命令: & echo. & echo   {command} & echo. & echo ===================================== & echo. & set /p confirm=按回车键执行命令... & {command} & echo. & echo 命令已执行完成 & pause"'''
+        subprocess.Popen(cmd_script, shell=True)
         
         return {"status": "success", "command": command}
     except Exception as e:
@@ -998,7 +1177,9 @@ def adb_reboot():
 @app.post("/api/adb/install")
 def adb_install():
     """Install APK via ADB."""
+    import subprocess
     try:
+        # Open file dialog to select APK
         ps_cmd = """
         Add-Type -AssemblyName System.Windows.Forms
         $f = New-Object System.Windows.Forms.OpenFileDialog
@@ -1023,8 +1204,9 @@ def adb_install():
         device_arg = f"-s {device_id} "
         command = f'adb {device_arg}install "{apk_path}"'
         
-        cmd = f'start cmd /k "{command} && echo. && echo Installation completed. Press any key to close... && pause >nul"'
-        subprocess.Popen(cmd, shell=True)
+        # Open CMD with command displayed, wait for user to press Enter to execute
+        cmd_script = f'''start cmd /k "echo ===================================== & echo 即将安装应用: & echo. & echo   {apk_path} & echo. & echo 命令: {command} & echo. & echo ===================================== & echo. & set /p confirm=按回车键开始安装... & {command} & echo. & echo 安装完成 & pause"'''
+        subprocess.Popen(cmd_script, shell=True)
         
         return {"status": "success", "command": command, "apk_path": apk_path}
     except subprocess.TimeoutExpired:
@@ -1257,6 +1439,7 @@ def chat(request: ChatRequest):
             import time
             start_ts = time.time()
             all_task_outputs = []
+            all_actions = []  # Collect all action steps for history
 
             for loop_idx in range(request.loop_count):
                 if agent.is_stopping:
@@ -1280,6 +1463,47 @@ def chat(request: ChatRequest):
                         # Ensure fields are serializable
                         action_desc = step.action
                         if hasattr(action_desc, 'to_dict'): action_desc = action_desc.to_dict()
+                        
+                        # Only save KEY actions to history (results, not process)
+                        # Key actions: Take_over, finish, Note, Interact (user intervention or final results)
+                        # Process actions: Tap, Type, Swipe, Launch, etc. (temporary, shown in real-time only)
+                        if action_desc:
+                            action_type = action_desc.get('action') or action_desc.get('_metadata')
+                            key_actions = ['Take_over', 'finish', 'Note', 'Interact']
+                            if action_type in key_actions:
+                                # Avoid duplicate consecutive actions (same type + same message)
+                                is_duplicate = False
+                                if all_actions:
+                                    last = all_actions[-1]
+                                    last_type = last.get('action') or last.get('_metadata')
+                                    last_msg = last.get('message', '')
+                                    curr_msg = action_desc.get('message', '')
+                                    if last_type == action_type and last_msg == curr_msg:
+                                        is_duplicate = True
+                                
+                                if not is_duplicate:
+                                    all_actions.append(action_desc)
+                            
+                            # Log action execution status (always, regardless of verbose setting)
+                            # Format: [DeviceID] [ActionType] details
+                            log_parts = [f"[{target_device}]", f"[{action_type}]"]
+                            if action_desc.get('element'):
+                                log_parts.append(f"坐标:{action_desc['element']}")
+                            if action_desc.get('app'):
+                                log_parts.append(f"应用:{action_desc['app']}")
+                            if action_desc.get('text'):
+                                text = action_desc['text'][:20] + ('...' if len(action_desc['text']) > 20 else '')
+                                log_parts.append(f"文本:{text}")
+                            if action_desc.get('start') and action_desc.get('end'):
+                                log_parts.append(f"滑动:{action_desc['start']}->{action_desc['end']}")
+                            if action_desc.get('duration'):
+                                log_parts.append(f"等待:{action_desc['duration']}")
+                            if action_desc.get('message'):
+                                msg = action_desc['message'][:50] + ('...' if len(action_desc['message']) > 50 else '')
+                                log_parts.append(f"消息:{msg}")
+                            
+                            log_line = " ".join(log_parts)
+                            log_queue.put(log_line)
                         
                         yield json.dumps({
                             "type": "step",
@@ -1323,12 +1547,13 @@ def chat(request: ChatRequest):
                 m, s = divmod(duration_sec, 60)
                 duration_str = f"{m}m {s}s"
             
-            # Save Assistant Response
+            # Save Assistant Response with actions
             history.append({
                 "role": "assistant", 
                 "content": final_content,
                 "time": response_time,
-                "duration": duration_str
+                "duration": duration_str,
+                "actions": all_actions  # Save all action steps
             })
             save_chat_history(history, target_device)
             
@@ -1353,11 +1578,17 @@ def chat(request: ChatRequest):
     return StreamingResponse(generate_response(), media_type="application/x-ndjson")
 
 @app.websocket("/ws/logs")
-async def websocket_logs(websocket: WebSocket):
-    await manager.connect(websocket)
+async def websocket_logs(websocket: WebSocket, device_id: Optional[str] = None):
+    """WebSocket endpoint for real-time logs. Optionally filter by device_id."""
+    # Parse device_id from query parameters if not provided
+    if device_id is None:
+        query_params = websocket.query_params
+        device_id = query_params.get("device_id")
+    
+    await manager.connect(websocket, device_id)
     try:
         while True:
-            await websocket.receive_text() # Keep connection open
+            await websocket.receive_text()  # Keep connection open
     except WebSocketDisconnect:
         manager.disconnect(websocket)
 
